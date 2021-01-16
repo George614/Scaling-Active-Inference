@@ -103,13 +103,13 @@ class FlexibleDense(tf.Module):
         super().__init__(name=name)
         self.is_built = False
         self.out_features = out_features
+        self.init = tf.initializers.GlorotUniform()
     
     @tf.Module.with_name_scope # this can group operations in TensorBoard
     def __call__(self, X):
         # Create variables on first call.
         if not self.is_built:
-          self.W = tf.Variable(
-            tf.random.normal([X.shape[-1], self.out_features]), name='W')
+          self.W = tf.Variable(self.init([X.shape[-1], self.out_features]), name='W')
           self.b = tf.Variable(tf.zeros([self.out_features]), name='b')
           self.is_built = True
         return tf.matmul(X, self.W) + self.b
@@ -123,9 +123,7 @@ class Sampler(tf.Module):
     def __call__(self, inputs):
         mu, raw_std = inputs
         # softplus is supposed to avoid numerical overflow
-        # 1e-18 is tested for the squared std (used later in loss) i.e.
-        # tf.math.log(1e-36) is legal
-        std = tf.math.softplus(raw_std) + 1e-18
+        std = tf.clip_by_value(tf.math.softplus(raw_std), 0.01, 10.0)
         # read dims individually since the tf.shape() doesn't return a list
         # but returns a Tensor instead (which cannot be interated through)
         batch_size = tf.shape(mu)[0]
