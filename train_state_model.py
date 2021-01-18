@@ -13,7 +13,7 @@ for gpu in gpu_devices:
     tf.config.experimental.set_memory_growth(gpu, True)
 
 
-# @tf.function
+@tf.function
 def train_step(model, optimizer, s_prev, a_prev, o_cur, training=True):
     ''' training one step for the VAE-like components of active inference agent '''
     with tf.GradientTape() as tape:
@@ -61,8 +61,9 @@ if __name__ == "__main__":
             o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 2:3] # x_batch[:, :, 3:4]
             if stateModel.posterior.mu is None:
                 initial_states = tf.random.normal((args.vae_batch_size, args.z_size))
+                # initial_states = tf.convert_to_tensor(np.random.normal(size=(args.vae_batch_size, args.z_size)), dtype=tf.float32)
             else:
-                initial_states = stateModel.posterior.sample()
+                initial_states = stateModel.posterior.mu + stateModel.posterior.std * tf.random.normal((args.vae_batch_size, args.z_size))
             
             initial_actions = np.zeros((args.vae_batch_size, args.a_width))
             idx_rand_action = np.random.uniform(size=args.vae_batch_size) > 0.5
@@ -82,4 +83,6 @@ if __name__ == "__main__":
         
     # save the trained model
     tf.saved_model.save(stateModel, model_save_path)
+
+    # evaluate the model using the reconstruction error (on observation)
     
