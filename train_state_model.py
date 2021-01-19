@@ -14,10 +14,10 @@ for gpu in gpu_devices:
 
 
 @tf.function
-def train_step(model, optimizer, s_prev, a_prev, o_cur, training=True):
+def train_step(model, optimizer, s_prev, a_prev, o_cur):
     ''' training one step for the VAE-like components of active inference agent '''
     with tf.GradientTape() as tape:
-        loss, state_post = model(s_prev, a_prev, o_cur, training=training)
+        loss, state_post = model(s_prev, a_prev, o_cur)
     # since all layer/model classes are subclassed from tf.Modules, it's
     # eaiser to gather all trainable variables from all layers then calculate
     # gradients for all of them. Note that tf.Module is used instead of 

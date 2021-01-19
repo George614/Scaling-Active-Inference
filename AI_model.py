@@ -3,21 +3,24 @@ import math
 import os
 import matplotlib.pyplot as plt
 import tensorflow as tf
-from VAE_models import FlexibleDense
+from VAE_models import Dense
 
 
-@tf.function
+# @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32, name='p_mean'),
+#                               tf.TensorSpec(shape=None, dtype=tf.float32, name='p_std'),
+#                               tf.TensorSpec(shape=None, dtype=tf.float32, name='q_mean'),
+#                               tf.TensorSpec(shape=None, dtype=tf.float32, name='q_std')])
 def kl_d(mu_p, std_p, mu_q, std_q):
     ''' KL-Divergence function for 2 diagonal Gaussian distributions '''
     k = tf.cast(tf.shape(mu_p)[-1], tf.float32)
     log_var = tf.math.log(tf.reduce_prod(tf.math.square(std_q), axis=-1)/tf.reduce_prod(tf.math.square(std_p), axis=-1))
     mu_var_multip = tf.math.reduce_sum((mu_p-mu_q) / tf.math.square(std_q) * (mu_p-mu_q), axis=-1)
     trace = tf.math.reduce_sum(tf.math.square(std_p) / tf.math.square(std_q), axis=-1)
-    kl_d = 0.5 * (log_var - k + mu_var_multip + trace)
-    kl_d = tf.math.reduce_mean(kl_d)
-    return kl_d
+    kld = 0.5 * (log_var - k + mu_var_multip + trace)
+    kld = tf.math.reduce_mean(kld)
+    return kld
 
-@tf.function
+@tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
 	''' swish activation function '''
 	return x * tf.math.sigmoid(x)
@@ -25,16 +28,15 @@ def swish(x):
 
 class Encoder(tf.Module):
     ''' transition / posterior model of the active inference framework '''
-    def __init__(self, batch_size, dim_z, name='Encoder', activation='leaky_relu'):
+    def __init__(self, dim_input, dim_z, name='Encoder', activation='leaky_relu'):
         super().__init__(name=name)
         self.dim_z = dim_z  # latent dimension
-        self.dense_input = FlexibleDense(20, name='dense_input')
-        self.dense_e1 = FlexibleDense(20, name='dense_1')
-        self.dense_mu = FlexibleDense(dim_z, name='dense_mu')
-        self.dense_raw_std = FlexibleDense(dim_z, name='dense_raw_std')
-        self.mu = tf.Variable(tf.zeros((batch_size, dim_z)), trainable=False)
-        self.raw_std = tf.Variable(tf.zeros((batch_size, dim_z)), trainable=False)
-        self.std = tf.Variable(tf.zeros((batch_size, dim_z)), trainable=False)
+        self.dense_input = Dense(dim_input, 20, name='dense_input')
+        self.dense_e1 = Dense(20, 20, name='dense_1')
+        self.dense_mu = Dense(20, dim_z, name='dense_mu')
+        self.dense_raw_std = Dense(20, dim_z, name='dense_raw_std')
+        self.mu = None
+        self.std = None
         if activation == 'tanh':
             self.activation = tf.nn.tanh
         elif activation == 'leaky_relu':
@@ -44,8 +46,9 @@ class Encoder(tf.Module):
         else:
             raise ValueError('incorrect activation type')    
     
-    @tf.function
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
+        print("X in encoder", X)
         z = self.dense_input(X)
         z = self.activation(z)
         z = self.dense_e1(z)
@@ -54,12 +57,18 @@ class Encoder(tf.Module):
         raw_std = self.dense_raw_std(z)
         # softplus is supposed to avoid numerical overflow
         std = tf.clip_by_value(tf.math.softplus(raw_std), 0.01, 10.0)
-        self.mu.assign(mu)
-        self.std.assign(std)
+        if self.mu is None:
+            batch_size = tf.shape(X)[0]
+            self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
+            self.std = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
+        else:
+            self.mu.assign(mu)
+            self.std.assign(std)
         z_sample = self.sample(mu, std)
         return z_sample, mu, std
 
-    @tf.function
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32, name='mean'),
+                                  tf.TensorSpec(shape=None, dtype=tf.float32, name='std')])
     def sample(self, mu, std):
         batch_size = tf.shape(mu)[0]
         # reparameterization trick
@@ -69,12 +78,12 @@ class Encoder(tf.Module):
 
 class Likelihood(tf.Module):
     ''' likelihood model of the active inference framework '''
-    def __init__(self, dim_x, name='likelihood', activation='leaky_relu'):
+    def __init__(self, dim_input, dim_x, name='likelihood', activation='leaky_relu'):
         super().__init__(name=name)
         self.dim_x = dim_x
-        self.dense_z_input = FlexibleDense(20, name='dense_z_input')
-        self.dense_d1 = FlexibleDense(20, name='dense_d1')
-        self.dense_output = FlexibleDense(self.dim_x, name='dense_x_output')
+        self.dense_z_input = Dense(dim_input, 20, name='dense_z_input')
+        self.dense_d1 = Dense(20, 20, name='dense_d1')
+        self.dense_output = Dense(20, self.dim_x, name='dense_x_output')
         if activation == 'tanh': 
             self.activation = tf.nn.tanh
         elif activation == 'leaky_relu':
@@ -84,7 +93,7 @@ class Likelihood(tf.Module):
         else:
             raise ValueError('incorrect activation type')
        
-    @tf.function
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, z):
         x_output = self.dense_z_input(z)
         x_output = self.activation(x_output)
@@ -104,37 +113,44 @@ class StateModel(tf.Module):
         super().__init__(name='StateModel')
         self.dim_z = args.z_size  # latent space size
         self.dim_obv = args.o_size  # observation size
+        self.a_size = args.a_width
         self.kl_weight = args.vae_kl_weight
-        self.transition = Encoder(args.vae_batch_size, self.dim_z, name='transition')
-        self.posterior = Encoder(args.vae_batch_size, self.dim_z, name='posterior')
-        self.likelihood = Likelihood(self.dim_obv)
+        self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='transition')
+        self.posterior = Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, name='posterior')
+        self.likelihood = Likelihood(self.dim_z, self.dim_obv)
 
-    @tf.function
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
+                                   tf.TensorSpec(shape=None, dtype=tf.float32)])
     def mse(self, x_reconst, x_true):
         sse = tf.math.reduce_sum(tf.math.square(x_reconst-x_true), axis=-1)
         return tf.math.reduce_mean(sse)
 
-    @tf.function
-    def __call__(self, s_prev, a_prev, o_cur=None, training=False):
-        if training:
-            # add some noise to the observation
-            o_cur_batch = o_cur + tf.random.normal(tf.shape(o_cur)) * 0.1
-            _, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
-            state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur_batch], axis=-1))
-            o_reconst = self.likelihood(state_post)
-            # reconstruction loss (std assume to be 1, only reconst of mean)
-            mse_loss = self.mse(o_reconst, o_cur)
-            # KL Divergence loss
-            kld = kl_d(mu_post, std_post, mu_tran, std_tran)
-            total_loss = self.kl_weight * kld + mse_loss
-            return total_loss, state_post
-        else:
-            state_tran, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
-            o_reconst = self.likelihood(state_tran)
-            if o_cur is not None:
-                state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur], axis=-1))
-                return state_tran, o_reconst, state_post
-            return state_tran, o_reconst
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
+                                  tf.TensorSpec(shape=None, dtype=tf.float32),
+                                  tf.TensorSpec(shape=None, dtype=tf.float32)])
+    def __call__(self, s_prev, a_prev, o_cur):
+        # add some noise to the observation
+        o_cur_batch = o_cur + tf.random.normal(tf.shape(o_cur)) * 0.1
+        print("s_prev in stateModel: ", s_prev)
+        print("a_prev in stateModel: ", a_prev)
+        _, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
+        state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur_batch], axis=-1))
+        o_reconst = self.likelihood(state_post)
+        # reconstruction loss (std assume to be 1, only reconst of mean)
+        mse_loss = self.mse(o_reconst, o_cur)
+        # KL Divergence loss
+        kld = kl_d(mu_post, std_post, mu_tran, std_tran)
+        total_loss = self.kl_weight * kld + mse_loss
+        return total_loss, state_post
+    
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
+                                  tf.TensorSpec(shape=None, dtype=tf.float32),
+                                  tf.TensorSpec(shape=None, dtype=tf.float32)])
+    def serve(self, s_prev, a_prev, o_cur):
+        state_tran, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
+        o_reconst = self.likelihood(state_tran)
+        state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur], axis=-1))
+        return state_tran, o_reconst, state_post
 
 
 class Planner(tf.Module):
@@ -142,6 +158,7 @@ class Planner(tf.Module):
     def __init__(self, stateModel, args, s_mu_prefer, s_std_prefer=None):
         super().__init__(name='Planner')
         self.stateModel = stateModel
+        self.stateModel.training.assign(0)
         self.dim_z = args.z_size
         self.dim_obv = args.o_size
         self.K = args.planner_lookahead  # lookahead

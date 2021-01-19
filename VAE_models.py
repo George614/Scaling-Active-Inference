@@ -71,8 +71,8 @@ class Dense(Layer):
 
 @tf.function
 def swish(x):
-	''' swish activation function '''
-	return x * tf.math.sigmoid(x)
+    ''' swish activation function '''
+    return x * tf.math.sigmoid(x)
 
 
 def sigmoid_cross_entropy_with_logits(x, y):
@@ -88,11 +88,12 @@ class Dense(tf.Module):
     def __init__(self, in_features, out_features, name=None):
         super().__init__(name=name)
         bound = 1 / math.sqrt(in_features)
-        self.W = tf.random_uniform((in_features, out_features), -bound, bound)
+        self.W = tf.random.uniform((in_features, out_features), -bound, bound)
         self.W = tf.Variable(self.W, name='W')
         self.b = tf.zeros((out_features,))
         self.b = tf.Variable(self.b, name='b')
     
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
         return tf.matmul(X, self.W) + self.b
         
@@ -107,11 +108,13 @@ class FlexibleDense(tf.Module):
     
     @tf.Module.with_name_scope # this can group operations in TensorBoard
     def __call__(self, X):
-        # Create variables on first call.
+        # Create variables on first call. This would not work in Graph mode!
         if not self.is_built:
-          self.W = tf.Variable(self.init([X.shape[-1], self.out_features]), name='W')
-          self.b = tf.Variable(tf.zeros([self.out_features]), name='b')
-          self.is_built = True
+            print("\nshape of X in FlexibleDense: ", tf.shape(X), "\n")
+            print("X in FlexibleDense: ", X)
+            self.W = tf.Variable(self.init([X.shape[-1], self.out_features]), name='W')
+            self.b = tf.Variable(tf.zeros([self.out_features]), name='b')
+            self.is_built = True
         return tf.matmul(X, self.W) + self.b
 
 
@@ -149,7 +152,7 @@ class Encoder(tf.Module):
         elif activation == 'leaky_relu':
             self.activation = tf.nn.leaky_relu
         elif activation == 'swish':
-        	self.activation = swish
+            self.activation = swish
         else:
             raise ValueError('incorrect activation type')    
     
