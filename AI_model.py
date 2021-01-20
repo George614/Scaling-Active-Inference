@@ -6,10 +6,10 @@ import tensorflow as tf
 from VAE_models import Dense
 
 
-# @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32, name='p_mean'),
-#                               tf.TensorSpec(shape=None, dtype=tf.float32, name='p_std'),
-#                               tf.TensorSpec(shape=None, dtype=tf.float32, name='q_mean'),
-#                               tf.TensorSpec(shape=None, dtype=tf.float32, name='q_std')])
+@tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32, name='p_mean'),
+                              tf.TensorSpec(shape=None, dtype=tf.float32, name='p_std'),
+                              tf.TensorSpec(shape=None, dtype=tf.float32, name='q_mean'),
+                              tf.TensorSpec(shape=None, dtype=tf.float32, name='q_std')])
 def kl_d(mu_p, std_p, mu_q, std_q):
     ''' KL-Divergence function for 2 diagonal Gaussian distributions '''
     k = tf.cast(tf.shape(mu_p)[-1], tf.float32)
@@ -22,8 +22,8 @@ def kl_d(mu_p, std_p, mu_q, std_q):
 
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
-	''' swish activation function '''
-	return x * tf.math.sigmoid(x)
+    ''' swish activation function '''
+    return x * tf.math.sigmoid(x)
 
 
 class Encoder(tf.Module):
@@ -158,7 +158,6 @@ class Planner(tf.Module):
     def __init__(self, stateModel, args, s_mu_prefer, s_std_prefer=None):
         super().__init__(name='Planner')
         self.stateModel = stateModel
-        self.stateModel.training.assign(0)
         self.dim_z = args.z_size
         self.dim_obv = args.o_size
         self.K = args.planner_lookahead  # lookahead
@@ -170,8 +169,11 @@ class Planner(tf.Module):
         self.n_pi = math.pow(self.n_actions, self.D)
         self.action_space = tf.constant([0, 2], dtype=tf.float32) #TODO change it to a general setting
         self.action = tf.constant([0], dtype=tf.float32)
-        self.trueState = None
-        self.curStates = None
+        # self.true_state is the single true state of the agent/model
+        self.true_state = None
+        # self.stage_states contains all N samples of states used by the transition model
+        # at the start / end of each stage of planning
+        self.stage_states = None
         # empirical preferred state (prior preference)
         self.s_mu_prefer = s_mu_prefer
         if s_std_prefer is not None:
@@ -187,7 +189,7 @@ class Planner(tf.Module):
         for d in reversed(range(self.D)):
             stage_kld = all_kld.pop()
             stage_H = all_H.pop()
-            efe_stage = stage_kld + stage_H
+            efe_stage = stage_kld + 1/self.rho * stage_H
             if reduced_efe is not None:
                 efe_stage += reduced_efe
             if d > 0:
@@ -202,9 +204,10 @@ class Planner(tf.Module):
 
     # @tf.function
     def __call__(self, cur_obv):
-        if self.trueState is None:
-            self.trueState =  self.stateModel.posterior.mu + self.stateModel.posterior.std * tf.random.normal(tf.shape(self.stateModel.posterior.mu))
-            self.trueState = tf.math.reduce_mean(self.trueState, axis=0, keepdims=True)
+        if self.true_state is None:
+            self.true_state =  self.stateModel.posterior.mu + self.stateModel.posterior.std * tf.random.normal(tf.shape(self.stateModel.posterior.mu))
+            self.true_state = tf.math.reduce_mean(self.true_state, axis=0, keepdims=True)
+        
         # take current observation, previous action and previous true state to calculate
         # current true state using the posterior model
         a_prev = tf.expand_dims(self.action, axis=0)
@@ -212,12 +215,9 @@ class Planner(tf.Module):
         multiples = tf.constant((self.N, 1), dtype=tf.int32)
         a_prev = tf.tile(a_prev, multiples)
         cur_obv = tf.tile(cur_obv, multiples)
-        self.trueState = tf.tile(self.trueState, multiples)
-        # temporally the input to posterior model must have shape (batch_size_training x dim_input)
-        self.trueState, _, _ = self.stateModel.posterior(tf.concat([self.trueState, a_prev, cur_obv], axis=-1))
-        self.trueState = tf.math.reduce_mean(self.trueState, axis=0, keepdims=True)
-        # self.curStates contains all different samples used by the transition model
-        self.curStates = tf.expand_dims(self.trueState, axis=0)
+        self.true_state = tf.tile(self.true_state, multiples)
+        self.true_state, _, _ = self.stateModel.posterior(tf.concat([self.true_state, a_prev, cur_obv], axis=-1))
+        self.true_state = tf.math.reduce_mean(self.true_state, axis=0, keepdims=True)
 
         # KL-D and entropy values for each policy at each planning stage (D stages in total)
         all_kld = []
@@ -227,10 +227,10 @@ class Planner(tf.Module):
             # each branch is split into N_actions branchs
             if d == 0:
                 multiples = tf.constant((self.n_actions, self.N, 1), dtype=tf.int32)
-                state_results = tf.tile(self.curStates, multiples)
+                self.stage_states = tf.Variable(tf.tile(tf.expand_dims(self.true_state, axis=0), multiples))
             else:
                 multiples = tf.constant([self.n_actions, 1, 1], dtype=tf.int32)
-                state_results = tf.tile(state_results, multiples)
+                self.stage_states = tf.Variable(tf.tile(self.stage_states, multiples))
             
             step_kld = np.zeros((self.n_actions ** (d+1), self.K), dtype=np.float32)
             step_H = np.zeros((self.n_actions ** (d+1), self.K), dtype=np.float32)
@@ -238,17 +238,19 @@ class Planner(tf.Module):
             # rollout for each branch
             for idx_b in range(self.n_actions ** (d+1)):
                 action = self.action_space[idx_b % self.n_actions]
-                curStates = state_results[idx_b]
+                if action == 1:
+                    action = 2
+                rolling_states = self.stage_states[idx_b]
                 # plan for K steps in a roll (continuously follows a policy)
                 for t in range(self.K):
                     action_t = action * tf.ones((self.N, 1))
                     # use only the transition model to rollout the states
-                    curStates, _, _ = self.stateModel.transition(tf.concat([curStates, action_t], axis=-1))
+                    rolling_states, _, _ = self.stateModel.transition(tf.concat([rolling_states, action_t], axis=-1))
                     # use the likelihood model to map states to observations
-                    obvSamples = self.stateModel.likelihood(curStates)
+                    obvSamples = self.stateModel.likelihood(rolling_states)
                     # gather batch statistics
-                    states_mean = tf.math.reduce_mean(curStates, axis=0)
-                    states_std = tf.math.reduce_std(curStates, axis=0)
+                    states_mean = tf.math.reduce_mean(rolling_states, axis=0)
+                    states_std = tf.math.reduce_std(rolling_states, axis=0)
                     obv_std = tf.math.reduce_std(obvSamples, axis=0)
                     # KL Divergence between expected states and preferred states
                     step_kld_point = kl_d(states_mean, states_std, self.s_mu_prefer, self.s_std_prefer)
@@ -257,14 +259,28 @@ class Planner(tf.Module):
                     # entropy on the expected observations
                     n = tf.shape(obv_std)[-1]
                     H = float(n/2) + float(n/2) * tf.math.log(2*math.pi * tf.math.pow(tf.math.reduce_prod(tf.math.square(obv_std), axis=-1), float(1/n)))
-                    step_H[idx_b, t] = H / self.rho
+                    step_H[idx_b, t] = H
+                
+                # update self.stage_states
+                self.stage_states[idx_b, :, :].assign(rolling_states[:, :])
+                
             # gather KL-D value and entropy for each branch
             all_kld.append(np.sum(step_kld, axis=1))
             all_H.append(np.sum(step_H, axis=1))
+        
         # calculate EFE values for the root policies
         efe_root = self.evaluate_stage_efe(all_kld, all_H)
+        
+        # sample a policy given probabilities of each policy
         # prob_pi = tf.math.softmax(-self.gamma * efe_root)
         # self.action =  np.random.choice([0, 2], p=prob_pi.numpy())
+        
+        # use the policy with the lowest efe value
         self.action = tf.argmin(efe_root)
         self.action = tf.cast(tf.reshape(self.action, [-1]), dtype=tf.float32)
+        
+        # account for the omission of actoion 1 for MountainCar
+        if self.action == 1:
+            self.action = tf.constant([2], dtype=tf.float32)
+        print("self.action: ", self.action.numpy())
         return self.action
