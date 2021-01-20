@@ -80,7 +80,43 @@ if __name__ == "__main__":
             
             loss_accum += loss_episode
             print("training_step {}, loss: {:.4f}".format(training_step+1, loss_accum / (training_step+1)))
-        
+    
+    #%% fine-tune with human data
+    fine_tune_epoch = 16
+    batch_tune = 2
+    path = "D:/Projects/TF2_ML/openai.gym.human3"
+    d_human = np.load(path+'/all_data.npy', allow_pickle=True)
+    human_data = tf.data.Dataset.from_tensor_slices(d_human[1:])
+    human_data = human_data.shuffle(len(d_human)).batch(batch_tune, drop_remainder=True)
+    print("Starting fine-tuning...")
+    for epoch in range(fine_tune_epoch):
+        print("=================== Epoch {} ==================".format(epoch+1))
+        loss_accum = 0
+        for training_step, x_batch in enumerate(human_data):
+            # split the batch data into observation and action (disgard reward for now)
+            o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 2:3] # x_batch[:, :, 3:4]
+            if stateModel.posterior.mu is None:
+                initial_states = tf.random.normal((batch_tune, args.z_size))
+            else:
+                initial_states = stateModel.posterior.mu[:batch_tune] + stateModel.posterior.std[:batch_tune] * tf.random.normal((batch_tune, args.z_size))
+            
+            initial_actions = np.zeros((len(x_batch), args.a_width))
+            idx_rand_action = np.random.uniform(size=len(x_batch)) > 0.5
+            initial_actions[idx_rand_action, :] = 2
+            initial_actions = tf.convert_to_tensor(initial_actions, dtype=tf.float32)
+            
+            for time_step in range(tf.shape(o_cur_batch)[1]):
+                if time_step == 0:
+                    loss_episode = 0
+                    loss, state_post = train_step(stateModel, opt, initial_states, initial_actions, o_cur_batch[:, 0, :])
+                else:
+                    loss, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
+                loss_episode += loss.numpy().sum()
+            
+            loss_accum += loss_episode
+            print("training_step {}, loss: {:.4f}".format(training_step+1, loss_accum / (training_step+1)))
+    
+    
     # save the trained model
     tf.saved_model.save(stateModel, model_save_path)
 
