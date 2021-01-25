@@ -182,9 +182,15 @@ class Planner(tf.Module):
             self.s_std_prefer = tf.ones((self.dim_z,))
 
     # @tf.function
-    def evaluate_stage_efe(self, all_kld, all_H):
-        ## calculate expected free energy for each policy using an iterative approach
-        # instead of the original recursive approach ##
+    def evaluate_stage_efe_recursive(self, all_kld, all_H):
+        '''
+        This is the recursive version of calculating EFE for policies. The number policies
+        equals to the number of possible actions or policies at the first/root stage.
+        In other words, only the EFE values for the first stage are returned.
+        All policies in future stages (expansion in a tree search) are accumulated
+        recursively into the EFE at the root stage. This implementation uses an iterative
+        approach instead of a recursive approach.
+        '''
         reduced_efe = None
         for d in reversed(range(self.D)):
             stage_kld = all_kld.pop()
@@ -201,6 +207,26 @@ class Planner(tf.Module):
                 reduced_efe = tf.math.segment_sum(efe_stage_weighted, segments)
         
         return efe_stage
+
+    def evaluate_stage_efe(self, all_kld, all_H):
+        '''
+        This is the non-recursive version of calculating EFE for policies which cover
+        a complete horizon H = K x D. The number of policies evaluated equals to the
+        number of possible actions to the power of D.
+        '''
+        horizon_kld = tf.zeros((self.n_actions**self.D,))
+        horizon_H = tf.zeros((self.n_actions**self.D,))
+
+        for d in range(1, self.D+1):
+            stage_kld = all_kld.pop(0)
+            stage_H = all_H.pop(0)
+            repeated_kld = tf.repeat(stage_kld, repeats=self.n_actions**(self.D-d))
+            repeated_H = tf.repeat(stage_H, repeats=self.n_actions**(self.D-d))
+            horizon_kld = horizon_kld + repeated_kld
+            horizon_H = horizon_H + repeated_H
+        
+        horizon_efe = horizon_kld + 1/self.rho * horizon_H
+        return horizon_efe, horizon_kld, horizon_H
 
     # @tf.function
     def __call__(self, cur_obv):
@@ -222,26 +248,28 @@ class Planner(tf.Module):
         # KL-D and entropy values for each policy at each planning stage (D stages in total)
         all_kld = []
         all_H = []
-        # plan for D times of K-step lookahead
+        # plan for D times of K consecutive steps with repeated actions lookahead
         for d in range(self.D):
-            # each branch is split into N_actions branchs
+            # each branch is split into N_actions branchs at each stage
             if d == 0:
+                # make N_samples copies of the true state
                 multiples = tf.constant((self.n_actions, self.N, 1), dtype=tf.int32)
                 self.stage_states = tf.Variable(tf.tile(tf.expand_dims(self.true_state, axis=0), multiples))
             else:
                 multiples = tf.constant([self.n_actions, 1, 1], dtype=tf.int32)
                 self.stage_states = tf.Variable(tf.tile(self.stage_states, multiples))
             
+            # KL-D and entropy values for each policy at each time step within K steps
             step_kld = np.zeros((self.n_actions ** (d+1), self.K), dtype=np.float32)
             step_H = np.zeros((self.n_actions ** (d+1), self.K), dtype=np.float32)
             
-            # rollout for each branch
+            # rollout for each branch, only for finite discretized actions
             for idx_b in range(self.n_actions ** (d+1)):
                 action = self.action_space[idx_b % self.n_actions]
                 if action == 1:
                     action = 2
                 rolling_states = self.stage_states[idx_b]
-                # plan for K steps in a roll (continuously follows a policy)
+                # plan for K steps in a roll (repeat an action K times given a policy)
                 for t in range(self.K):
                     action_t = action * tf.ones((self.N, 1))
                     # use only the transition model to rollout the states
@@ -261,7 +289,7 @@ class Planner(tf.Module):
                     H = float(n/2) + float(n/2) * tf.math.log(2*math.pi * tf.math.pow(tf.math.reduce_prod(tf.math.square(obv_std), axis=-1), float(1/n)))
                     step_H[idx_b, t] = H
                 
-                # update self.stage_states
+                # update self.stage_states, which must be a tf.Variable since tensors are immutable
                 self.stage_states[idx_b, :, :].assign(rolling_states[:, :])
                 
             # gather KL-D value and entropy for each branch
@@ -269,8 +297,9 @@ class Planner(tf.Module):
             all_H.append(np.sum(step_H, axis=1))
         
         # calculate EFE values for the root policies
-        efe_root = self.evaluate_stage_efe(all_kld, all_H)
-        
+        # efe_root = self.evaluate_stage_efe_recursive(all_kld, all_H)
+        efe_root, _, _ = self.evaluate_stage_efe(all_kld, all_H)
+
         # sample a policy given probabilities of each policy
         # prob_pi = tf.math.softmax(-self.gamma * efe_root)
         # self.action =  np.random.choice([0, 2], p=prob_pi.numpy())
@@ -279,8 +308,15 @@ class Planner(tf.Module):
         self.action = tf.argmin(efe_root)
         self.action = tf.cast(tf.reshape(self.action, [-1]), dtype=tf.float32)
         
-        # account for the omission of actoion 1 for MountainCar
-        if self.action == 1:
+        if self.action < 4:
+            self.action = tf.constant([0], dtype=tf.float32)
+        else:
             self.action = tf.constant([2], dtype=tf.float32)
+        
+        ### the block below is previous code for 2 policies
+        # # account for the omission of actoion 1 for MountainCar
+        # if self.action == 1:
+        #     self.action = tf.constant([2], dtype=tf.float32)
+        
         print("self.action: ", self.action.numpy())
         return self.action
