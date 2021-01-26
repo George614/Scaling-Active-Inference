@@ -20,6 +20,7 @@ def kl_d(mu_p, std_p, mu_q, std_q):
     kld = tf.math.reduce_mean(kld)
     return kld
 
+
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
     ''' swish activation function '''
@@ -166,9 +167,11 @@ class Planner(tf.Module):
         self.rho = args.planner_rho  # weight term on expected ambiguity
         self.gamma = args.planner_gamma  # temperature factor applied to the EFE before calculate belief about policies
         self.n_actions = args.n_actions  # for discrete action space, specify the number of possible actions
-        self.n_pi = math.pow(self.n_actions, self.D)
+        self.n_pi = self.n_actions ** self.D
         self.action_space = tf.constant([0, 2], dtype=tf.float32) #TODO change it to a general setting
         self.action = tf.constant([0], dtype=tf.float32)
+        # whether or not use the effects of switching to another policy
+        self.include_extened_efe = args.planner_full_efe
         # self.true_state is the single true state of the agent/model
         self.true_state = None
         # self.stage_states contains all N samples of states used by the transition model
@@ -214,8 +217,8 @@ class Planner(tf.Module):
         a complete horizon H = K x D. The number of policies evaluated equals to the
         number of possible actions to the power of D.
         '''
-        horizon_kld = tf.zeros((self.n_actions**self.D,))
-        horizon_H = tf.zeros((self.n_actions**self.D,))
+        horizon_kld = tf.zeros((len(all_kld[-1]),))
+        horizon_H = tf.zeros((len(all_kld[-1]),))
 
         for d in range(1, self.D+1):
             stage_kld = all_kld.pop(0)
@@ -227,6 +230,28 @@ class Planner(tf.Module):
         
         horizon_efe = horizon_kld + 1/self.rho * horizon_H
         return horizon_efe, horizon_kld, horizon_H
+
+    def evaluate_2_term_efe(self, all_kld, all_H):
+        '''
+        This funciton calculate the EFE values for self.n_action ** self.D policies
+        using 2 terms. The first term is the EFE value for a planning horizon H=KxD.
+        The second term acounts for the effects of switching to another policy after
+        the first H steps.
+        '''
+        # EFE values for a horzion of H = KxD, self.n_pi policies in total
+        horizon_efe, horizon_kld, horizon_H = self.evaluate_stage_efe(all_kld[:self.D], all_H[:self.D])
+        # EFE values for policies after H steps, i.e. the effect of switching to a new policy
+        extended_efe, extended_kld, extended_H = self.evaluate_stage_efe(all_kld[self.D:], all_H[self.D:])
+        
+        efe_group = [extended_efe[i:i+self.n_pi] for i in range(0, self.n_actions ** (2*self.D), self.n_pi)]
+        prob_pi_group = [tf.nn.softmax(-self.gamma * efe_branch) for efe_branch in efe_group]
+        efe_extended_weighted = [prob_pi * efe_extended for prob_pi, efe_extended in zip(prob_pi_group, efe_group)]
+        efe_extended_weighted = tf.concat(efe_extended_weighted, axis=0)
+        segments = tf.repeat(tf.range(self.n_pi), self.n_pi)
+        switch_efe = tf.math.segment_sum(efe_extended_weighted, segments)
+        total_efe = horizon_efe + switch_efe
+
+        return total_efe
 
     # @tf.function
     def __call__(self, cur_obv):
@@ -248,8 +273,10 @@ class Planner(tf.Module):
         # KL-D and entropy values for each policy at each planning stage (D stages in total)
         all_kld = []
         all_H = []
-        # plan for D times of K consecutive steps with repeated actions lookahead
-        for d in range(self.D):
+
+        planning_depth = self.D * 2 if self.include_extened_efe else self.D
+        # plan for 2D / D times of K consecutive steps with repeated actions lookahead
+        for d in range(planning_depth):
             # each branch is split into N_actions branchs at each stage
             if d == 0:
                 # make N_samples copies of the true state
@@ -298,7 +325,11 @@ class Planner(tf.Module):
         
         # calculate EFE values for the root policies
         # efe_root = self.evaluate_stage_efe_recursive(all_kld, all_H)
-        efe_root, _, _ = self.evaluate_stage_efe(all_kld, all_H)
+        if self.include_extened_efe:
+            efe_root = self.evaluate_2_term_efe(all_kld, all_H)
+        else:
+            efe_root, _, _ = self.evaluate_stage_efe(all_kld, all_H)
+        
 
         # sample a policy given probabilities of each policy
         # prob_pi = tf.math.softmax(-self.gamma * efe_root)

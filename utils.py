@@ -30,3 +30,6 @@ PARSER.add('--planner_plan_depth', type=int, default=3, help='depth in the plann
 PARSER.add('--planner_n_samples', type=int, default=100, help='num of samples to draw during the state rollout')
 PARSER.add('--planner_rho', type=float, default=0.1, help='risk aversion or greediness of the agent')
 PARSER.add('--planner_gamma', type=float, default=1.0, help='temperature parameter used in policy selection')
+PARSER.add_argument('--planner_full_efe', dest='planner_full_efe', action='store_true')
+PARSER.add_argument('--planner_no_full_efe', dest='planner_full_efe', action='store_false')
+PARSER.set_defaults(render_mode=True)
