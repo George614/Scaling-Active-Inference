@@ -118,7 +118,8 @@ class StateModel(tf.Module):
         self.kl_weight = args.vae_kl_weight
         self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='transition')
         self.posterior = Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, name='posterior')
-        self.likelihood = Likelihood(self.dim_z, self.dim_obv)
+        # self.likelihood = Likelihood(self.dim_z, self.dim_obv)
+        self.likelihood = Encoder(self.dim_z, self.dim_obv, name='likelihood') # changed to output a distribution
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                    tf.TensorSpec(shape=None, dtype=tf.float32)])
@@ -128,29 +129,37 @@ class StateModel(tf.Module):
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32),
-                                  tf.TensorSpec(shape=None, dtype=tf.float32)])
-    def __call__(self, s_prev, a_prev, o_cur):
+                                  tf.TensorSpec(shape=None, dtype=tf.float32),
+                                  tf.TensorSpec(shape=[None], dtype=tf.bool)])
+    def __call__(self, s_prev, a_prev, o_cur, mask):
         # add some noise to the observation
         o_cur_batch = o_cur + tf.random.normal(tf.shape(o_cur)) * 0.1
         print("s_prev in stateModel: ", s_prev)
         print("a_prev in stateModel: ", a_prev)
         _, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
         state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur_batch], axis=-1))
-        o_reconst = self.likelihood(state_post)
+        # o_reconst = self.likelihood(state_post)
+        o_reconst, mu_o, std_o = self.likelihood(state_post)
+        
+        # mask out empty samples in the batch when calculating the loss
         # reconstruction loss (std assume to be 1, only reconst of mean)
-        mse_loss = self.mse(o_reconst, o_cur)
+        mse_loss = self.mse(o_reconst[mask], o_cur[mask])
         # KL Divergence loss
-        kld = kl_d(mu_post, std_post, mu_tran, std_tran)
+        kld = kl_d(mu_post[mask], std_post[mask], mu_tran[mask], std_tran[mask])
+
         total_loss = self.kl_weight * kld + mse_loss
-        return total_loss, state_post
+        
+        return total_loss, mse_loss, kld, state_post
     
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32)])
     def serve(self, s_prev, a_prev, o_cur):
         state_tran, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
-        o_reconst = self.likelihood(state_tran)
+        # o_reconst = self.likelihood(state_tran)
+        o_reconst, mu_o, std_o = self.likelihood(state_tran)
         state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur], axis=-1))
+        
         return state_tran, o_reconst, state_post
 
 
@@ -229,6 +238,7 @@ class Planner(tf.Module):
             horizon_H = horizon_H + repeated_H
         
         horizon_efe = horizon_kld + 1/self.rho * horizon_H
+        
         return horizon_efe, horizon_kld, horizon_H
 
     def evaluate_2_term_efe(self, all_kld, all_H):
