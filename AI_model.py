@@ -121,19 +121,31 @@ class StateModel(tf.Module):
         # self.likelihood = Likelihood(self.dim_z, self.dim_obv)
         self.likelihood = Encoder(self.dim_z, self.dim_obv, name='likelihood') # changed to output a distribution
 
+
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                    tf.TensorSpec(shape=None, dtype=tf.float32)])
     def mse(self, x_reconst, x_true):
-        sse = tf.math.reduce_sum(tf.math.square(x_reconst-x_true), axis=-1)
+        ''' Mean Squared Error loss function'''
+        sse = tf.math.reduce_sum(tf.math.square(x_reconst - x_true), axis=-1)
         return tf.math.reduce_mean(sse)
+
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
+                                  tf.TensorSpec(shape=None, dtype=tf.float32),
+                                  tf.TensorSpec(shape=None, dtype=tf.float32)])
+    def g_nll(self, mu, std, x_true):
+        ''' Gaussian Negative Log Likelihood loss function '''
+        nll = 0.5 * tf.math.log(2 * math.pi * tf.math.square(std)) + tf.math.square(x_true - mu) / (2 * tf.math.square(std))
+        return tf.reduce_mean(tf.reduce_sum(nll, axis=-1))
+
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=[None], dtype=tf.bool)])
     def __call__(self, s_prev, a_prev, o_cur, mask):
+        ''' forward function of the AIF state model used during training '''
         # add some noise to the observation
-        o_cur_batch = o_cur + tf.random.normal(tf.shape(o_cur)) * 0.1
+        o_cur_batch = o_cur #+ tf.random.normal(tf.shape(o_cur)) * 0.1
         print("s_prev in stateModel: ", s_prev)
         print("a_prev in stateModel: ", a_prev)
         _, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
@@ -142,19 +154,34 @@ class StateModel(tf.Module):
         o_reconst, mu_o, std_o = self.likelihood(state_post)
         
         # mask out empty samples in the batch when calculating the loss
-        # reconstruction loss (std assume to be 1, only reconst of mean)
-        mse_loss = self.mse(o_reconst[mask], o_cur[mask])
+        # MSE loss
+        # mse_loss = self.mse(o_reconst[mask], o_cur[mask])
+        
+        tf.print("---------posterior mu--------")
+        tf.print(mu_post[mask])
+        tf.print("---------transition mu--------")
+        tf.print(mu_tran[mask])
+        tf.print("--------posterior std--------")
+        tf.print(std_post[mask])
+        tf.print("--------transition std--------")
+        tf.print(std_tran[mask])
+        
+        # Guassian log-likelihood loss for reconstruction of observation
+        gnll = self.g_nll(mu_o[mask], std_o[mask], o_cur[mask])
+
         # KL Divergence loss
         kld = kl_d(mu_post[mask], std_post[mask], mu_tran[mask], std_tran[mask])
 
-        total_loss = self.kl_weight * kld + mse_loss
+        total_loss = self.kl_weight * kld + gnll
         
-        return total_loss, mse_loss, kld, state_post
+        return total_loss, gnll, kld, state_post
     
+
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32)])
     def serve(self, s_prev, a_prev, o_cur):
+        ''' forward function of the AIF state model used during inference '''
         state_tran, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
         # o_reconst = self.likelihood(state_tran)
         o_reconst, mu_o, std_o = self.likelihood(state_tran)
@@ -193,6 +220,7 @@ class Planner(tf.Module):
         else:
             self.s_std_prefer = tf.ones((self.dim_z,))
 
+
     # @tf.function
     def evaluate_stage_efe_recursive(self, all_kld, all_H):
         '''
@@ -220,6 +248,7 @@ class Planner(tf.Module):
         
         return efe_stage
 
+
     def evaluate_stage_efe(self, all_kld, all_H):
         '''
         This is the non-recursive version of calculating EFE for policies which cover
@@ -240,6 +269,7 @@ class Planner(tf.Module):
         horizon_efe = horizon_kld + 1/self.rho * horizon_H
         
         return horizon_efe, horizon_kld, horizon_H
+
 
     def evaluate_2_term_efe(self, all_kld, all_H):
         '''
@@ -263,11 +293,13 @@ class Planner(tf.Module):
 
         return total_efe
 
+
     # @tf.function
     def __call__(self, cur_obv):
         if self.true_state is None:
-            self.true_state =  self.stateModel.posterior.mu + self.stateModel.posterior.std * tf.random.normal(tf.shape(self.stateModel.posterior.mu))
-            self.true_state = tf.math.reduce_mean(self.true_state, axis=0, keepdims=True)
+            # self.true_state =  self.stateModel.posterior.mu + self.stateModel.posterior.std * tf.random.normal(tf.shape(self.stateModel.posterior.mu))
+            # self.true_state = tf.math.reduce_mean(self.true_state, axis=0, keepdims=True)
+            self.true_state = tf.zeros((1, self.dim_z))
         
         # take current observation, previous action and previous true state to calculate
         # current true state using the posterior model
@@ -324,7 +356,7 @@ class Planner(tf.Module):
                     # entropy on the expected observations
                     n = tf.shape(obv_std)[-1]
                     H = float(n/2) + float(n/2) * tf.math.log(2*math.pi * tf.math.pow(tf.math.reduce_prod(tf.math.square(obv_std), axis=-1), float(1/n)))
-                    step_H[idx_b, t] = H
+                    step_H[idx_b, t] = tf.reduce_mean(H)
                 
                 # update self.stage_states, which must be a tf.Variable since tensors are immutable
                 self.stage_states[idx_b, :, :].assign(rolling_states[:, :])
@@ -340,7 +372,6 @@ class Planner(tf.Module):
         else:
             efe_root, _, _ = self.evaluate_stage_efe(all_kld, all_H)
         
-
         # sample a policy given probabilities of each policy
         # prob_pi = tf.math.softmax(-self.gamma * efe_root)
         # self.action =  np.random.choice([0, 2], p=prob_pi.numpy())

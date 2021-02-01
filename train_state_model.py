@@ -25,7 +25,7 @@ def train_step(model, optimizer, s_prev, a_prev, o_cur):
     mask = tf.not_equal(o_cur[:, 0], 0)
     
     with tf.GradientTape() as tape:
-        total_loss, mse_loss, kld, state_post = model(s_prev, a_prev, o_cur, mask)
+        total_loss, gnll, kld, state_post = model(s_prev, a_prev, o_cur, mask)
     
     # since all layer/model classes are subclassed from tf.Modules, it's
     # eaiser to gather all trainable variables from all layers then calculate
@@ -36,7 +36,7 @@ def train_step(model, optimizer, s_prev, a_prev, o_cur):
     # use back-prop algorithms for optimization for now
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
-    return total_loss, mse_loss, kld, state_post
+    return total_loss, gnll, kld, state_post
 
 
 def config4performance(dataset, batch_size=32, buffer_size=1024):
@@ -67,7 +67,8 @@ if __name__ == "__main__":
     stateModel = StateModel(args=args)
     # fake data
     # x_fake = tf.random.normal((1024, 100, 8))  # batch x seq_length x data_dim
-    
+    total_train_steps = 0
+
     for epoch in range(args.vae_num_epoch):
         print("=================== Epoch {} ==================".format(epoch+1))
         loss_accum = 0
@@ -87,24 +88,30 @@ if __name__ == "__main__":
             for time_step in range(tf.shape(o_cur_batch)[1]):
                 if time_step == 0:
                     loss_episode = 0
-                    mse_episode = 0
+                    gnll_episode = 0
                     kld_episode = 0
-                    total_loss, mse_loss, kld, state_post = train_step(stateModel, opt, initial_states, initial_actions, o_cur_batch[:, 0, :])
+                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, initial_actions, o_cur_batch[:, 0, :])
                 else:
-                    total_loss, mse_loss, kld, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
-                loss_episode += total_loss.numpy().sum()
-                mse_episode += mse_loss.numpy().sum()
-                kld_episode += kld.numpy().sum()
+                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
+                loss_episode += total_loss.numpy()
+                gnll_episode += gnll.numpy()
+                kld_episode += kld.numpy()
             
-            print("training_step {}, total_loss: {:.3f}, mse: {:.3f}, kld: {:.3f}".format(training_step+1, loss_episode, mse_episode, kld_episode))
+            total_train_steps += 1
+            tf.summary.scalar('total', loss_episode, step=total_train_steps)
+            tf.summary.scalar('gnll', gnll_episode, step=total_train_steps)
+            tf.summary.scalar('kld', kld_episode, step=total_train_steps)
+            print("training_step {}, total_loss: {:.3f}, gnll: {:.3f}, kld: {:.3f}".format(training_step+1, loss_episode, gnll_episode, kld_episode))
             # loss_accum += loss_episode
             # print("training_step {}, loss: {:.4f}".format(training_step+1, loss_accum / (training_step+1)))
     
     #%% fine-tune with human data
-    fine_tune_epoch = 16
+    fine_tune_epoch = 100
     path = "D:/Projects/TF2_ML/openai.gym.human3"
     d_human = np.load(path+'/all_data.npy', allow_pickle=True)
     d_human = d_human[1:]
+    # make the temporal length of human data to be the length of the
+    # longest episode
     pad_length = None
     for i in range(np.shape(d_human)[1]):
         if np.alltrue(d_human[:, i, :] == 0):
@@ -112,21 +119,24 @@ if __name__ == "__main__":
             break
     d_human = d_human[:, :pad_length, :]
     batch_tune = len(d_human)
+    opt.__setattr__('learning_rate', args.vae_learning_rate*0.3)
     human_data = tf.data.Dataset.from_tensor_slices(d_human)
     human_data = human_data.shuffle(len(d_human)).batch(batch_tune, drop_remainder=True)
     print("Starting fine-tuning...")
     
+    # @tf.function
     def train_step_ft(model, optimizer, s_prev, a_prev, o_cur):
-        ''' training one step for the VAE-like components of active inference agent '''
+        ''' fine-tune the VAE-AI model '''
         # mask out zero samples from shorter sequences
         mask = tf.not_equal(o_cur[:, 0], 0)
+        # tf.print(mask)
         with tf.GradientTape() as tape:
-            total_loss, mse_loss, kld, state_post = model(s_prev, a_prev, o_cur, mask)
+            total_loss, gnll, kld, state_post = model(s_prev, a_prev, o_cur, mask)
         gradients = tape.gradient(total_loss, model.trainable_variables)
         # use back-prop algorithms for optimization for now
         optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
-        return total_loss, mse_loss, kld, state_post
+        return total_loss, gnll, kld, state_post
 
     for epoch in range(fine_tune_epoch):
         print("=================== Epoch {} ==================".format(epoch+1))
@@ -140,18 +150,18 @@ if __name__ == "__main__":
             for time_step in range(tf.shape(o_cur_batch)[1]):
                 if time_step == 0:
                     loss_episode = 0
-                    mse_episode = 0
+                    gnll_episode = 0
                     kld_episode = 0
-                    total_loss, mse_loss, kld, state_post = train_step_ft(stateModel, opt, initial_states, initial_actions, o_cur_batch[:, 0, :])
+                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, initial_actions, o_cur_batch[:, 0, :])
                 else:
-                    total_loss, mse_loss, kld, state_post = train_step_ft(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
-                loss_episode += total_loss.numpy().sum()
-                mse_episode += mse_loss.numpy().sum()
-                kld_episode += kld.numpy().sum()
+                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
+                loss_episode += total_loss.numpy()
+                gnll_episode += gnll.numpy()
+                kld_episode += kld.numpy()
             
-            print("training_step {}, total_loss: {:.3f}, mse: {:.3f}, kld: {:.3f}".format(training_step+1, loss_episode, mse_episode, kld_episode))
+            print("training_step {}, total_loss: {:.3f}, gnll: {:.3f}, kld: {:.3f}".format(training_step+1, loss_episode, gnll_episode, kld_episode))
     
     # save the trained model
     tf.saved_model.save(stateModel, model_save_path)
-
+    print("> Finished training. Model saved in: ", model_save_path)
     # evaluate the model using the reconstruction error (on observation)

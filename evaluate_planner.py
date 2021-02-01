@@ -9,7 +9,7 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 
 import tensorflow as tf
 from utils import PARSER
-from AI_model import StateModel, Planner
+from AI_model import Planner
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -25,17 +25,18 @@ if __name__ == '__main__':
     human_data = tf.convert_to_tensor(human_data[1:], dtype=tf.float32)
     n_episode = tf.shape(human_data)[0]
     len_episode = tf.shape(human_data)[1]
-    state_post_end = np.zeros((n_episode, args.z_size))
+    state_post_end = np.zeros((n_episode, args.z_size), dtype=np.float32)
     
     # run human data through the posterior model and save the goal states
     for epi in range(n_episode):
         for time_step in range(len_episode):
             o_cur, a_prev = human_data[epi:epi+1, time_step, 0:1], human_data[epi:epi+1, time_step, 2:3]
             if time_step == 0:
-                batch_samples = loadedModel.posterior.mu + loadedModel.posterior.std * tf.random.normal(tf.shape(loadedModel.posterior.mu))
-                batch_mean = tf.reduce_mean(batch_samples, axis=0)
-                batch_std = tf.math.reduce_std(batch_samples, axis=0)
-                initial_states = tf.random.normal((1, args.z_size), mean=batch_mean, stddev=batch_std)
+                # batch_samples = loadedModel.posterior.mu + loadedModel.posterior.std * tf.random.normal(tf.shape(loadedModel.posterior.mu))
+                # batch_mean = tf.reduce_mean(batch_samples, axis=0)
+                # batch_std = tf.math.reduce_std(batch_samples, axis=0)
+                # initial_states = tf.random.normal((1, args.z_size), mean=batch_mean, stddev=batch_std)
+                initial_states = tf.zeros((1, args.z_size))
                 _, _, state_post = loadedModel.serve(initial_states, a_prev, o_cur)
             else:
                 if tf.squeeze(o_cur) == 0:
@@ -52,8 +53,8 @@ if __name__ == '__main__':
 
     #%%
     #  create planner using the trained AI state model and human prior preference
-    # planner = Planner(loadedModel, args, s_prefer_mean, s_std_prefer=s_prefer_std)
-    planner = Planner(loadedModel, args, end_state_mean)
+    planner = Planner(loadedModel, args, end_state_mean, s_std_prefer=end_state_std)
+    # planner = Planner(loadedModel, args, end_state_mean)
     env = gym.make('MountainCar-v0').env
     for i_episode in range(20):
         print("starting new episode...")
