@@ -1,9 +1,9 @@
 import math
 import numpy as np
 import gym
+import time
 from gym import spaces
 from gym.utils import seeding
-
 
 class InterceptionEnv(gym.Env):
     '''
@@ -127,6 +127,43 @@ class InterceptionEnv(gym.Env):
         self.state = np.asarray([self.target_init_distance, target_init_speed, has_changed_speed, subject_init_distance, subject_init_speed], dtype=np.float32)
         return np.array(self.state)
 
+
+    def render(self, mode='human'):
+        target_dis, target_speed, has_changed_speed, subject_dis, subject_speed = self.state
+
+        screen_width = 1000
+        screen_height = 400
+
+        scale = (1 / (self.intercept_threshold / 2)) * 1.5
+        
+        if self.viewer is None:
+            from gym.envs.classic_control import rendering
+            self.viewer = rendering.Viewer(screen_width, screen_height)
+
+            world_origin = rendering.Transform(translation=(screen_width / 2, screen_height / 3))
+
+            subject = rendering.make_circle(self.intercept_threshold / 2 * scale)
+            subject.set_color(0, 1, 0)
+            self.subject_trans = rendering.Transform()
+            subject.add_attr(self.subject_trans)
+            self.subject_rot = rendering.Transform()
+            subject.add_attr(self.subject_rot)
+            subject.add_attr(world_origin)
+            self.viewer.add_geom(subject)
+
+            target = rendering.make_circle(self.intercept_threshold / 2 * scale)
+            target.set_color(1, 0, 0)
+            self.target_trans = rendering.Transform()
+            target.add_attr(self.target_trans)
+            target.add_attr(world_origin)
+            self.viewer.add_geom(target)
+
+        self.subject_trans.set_translation(-subject_dis * scale, 0)
+        self.subject_rot.set_rotation(-self.approach_angle / 180 * math.pi)
+        self.target_trans.set_translation(-target_dis * scale, 0)
+        
+        return self.viewer.render(return_rgb_array=mode == 'rgb_array')
+
     def get_keys_to_action(self):
         # Control with left and right arrow keys.
         return {(): 0, (ord('a'),): 0, (ord('s'),): 1, (ord('d'),): 2, (ord('f'),): 3, (ord('g'),): 4, (ord('h'),): 5}
@@ -135,3 +172,18 @@ class InterceptionEnv(gym.Env):
         if self.viewer:
             self.viewer.close()
             self.viewer = None
+
+if __name__ == "__main__":
+    test = InterceptionEnv()
+    test.reset(0, 0)
+    frame_duration = 1 / test.FPS
+
+    test.render()
+    prev_time = time.time()
+    while not test.step(2)[2]:
+        time.sleep(frame_duration - (time.time() - prev_time))
+        test.render()
+        prev_time = time.time()
+    
+    input('press enter to close')
+
