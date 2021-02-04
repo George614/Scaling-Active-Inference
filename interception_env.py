@@ -135,41 +135,21 @@ class InterceptionEnv(gym.Env):
         
         if self.viewer is None:
             from gym.envs.classic_control import rendering
-            import freetype as ft
-
-            # change the filename if necessary
-            face = ft.Face("Vera.ttf")
-            # the size is specified in 1/64 pixel
-            face.set_char_size(48*64)
-            # initialize Stroker
-            stroker = ft.Stroker()
-            # change the outline size if necessary
-            stroker.set(1, ft.FT_STROKER_LINECAPS['FT_STROKER_LINECAP_ROUND'], ft.FT_STROKER_LINEJOINS['FT_STROKER_LINEJOIN_ROUND'], 0)
-            # override default load flags to avoid rendering the character during loading
-            face.load_char('S', ft.FT_LOAD_FLAGS['FT_LOAD_DEFAULT'])
-            # initialize C FreeType Glyph object
-            glyph = ft.FT_Glyph()
-            # extract independent glyph from the face
-            ft.FT_Get_Glyph(face.glyph._FT_GlyphSlot, ft.byref(glyph))
-            # initialize Python FreeType Glyph object
-            glyph = ft.Glyph(glyph)
-            # stroke border and check errors
-            error = ft.FT_Glyph_StrokeBorder(ft.byref(glyph._FT_Glyph), stroker._FT_Stroker, False, False)
-            if error:
-                raise ft.FT_Exception(error)
-            # bitmapGlyph is the rendered glyph that we want
-            bitmapGlyph = glyph.to_bitmap(ft.FT_RENDER_MODES['FT_RENDER_MODE_NORMAL'], 0)
+            import text_rendering
             
             screen_width = int((-math.cos(max(self.approach_angle_list) * math.pi / 180) * self.subject_max_position + self.target_init_distance) * scale + 20)
             screen_height = int((math.sin(min(self.approach_angle_list) * math.pi / 180) * self.subject_max_position) * scale + 100)
             self.viewer = rendering.Viewer(screen_width, screen_height)
 
+            # Set the world origin to somewhere that makes sense, keeping everything on screen at all times
             world_origin = rendering.Transform(translation=(self.target_init_distance * scale + 10, 90))
 
+            # Set the background to black to make the subject and target stand out more
             background = rendering.make_polygon([(0, 0), (screen_width, 0), (screen_width, screen_height), (0, screen_height)])
             background.set_color(0, 0, 0)
             self.viewer.add_geom(background)
 
+            # Create the subject and target in red and green, and dashed lines as the projected path they travel on
             subject = rendering.make_circle(self.intercept_threshold / 2 * scale)
             subject.set_color(0, 1, 0)
             self.subject_trans = rendering.Transform()
@@ -200,9 +180,42 @@ class InterceptionEnv(gym.Env):
             self.viewer.add_geom(subject)
             self.viewer.add_geom(target)
 
+            # Create the state display
+            info_top = screen_height
+            self.target_distance_label = text_rendering.Text('Target Distance: ' + str(target_dis))
+            info_top -= self.target_distance_label.text.content_height
+            self.target_distance_label.add_attr(rendering.Transform(translation=(5, info_top)))
+            self.viewer.add_geom(self.target_distance_label)
+
+            self.target_speed_label = text_rendering.Text('Target Speed: ' + str(target_speed))
+            info_top -= self.target_speed_label.text.content_height
+            self.target_speed_label.add_attr(rendering.Transform(translation=(5, info_top)))
+            self.viewer.add_geom(self.target_speed_label)
+
+            self.has_changed_speed_label = text_rendering.Text('Has Changed Speed: ' + ('Yes' if has_changed_speed else 'No'))
+            info_top -= self.has_changed_speed_label.text.content_height
+            self.has_changed_speed_label.add_attr(rendering.Transform(translation=(5, info_top)))
+            self.viewer.add_geom(self.has_changed_speed_label)
+
+            self.subject_dis_label = text_rendering.Text('Subject Distance: ' + str(subject_dis))
+            info_top -= self.subject_dis_label.text.content_height
+            self.subject_dis_label.add_attr(rendering.Transform(translation=(5, info_top)))
+            self.viewer.add_geom(self.subject_dis_label)
+
+            self.subject_speed_label = text_rendering.Text('Subject Speed: ' + str(subject_speed))
+            info_top -= self.subject_speed_label.text.content_height
+            self.subject_speed_label.add_attr(rendering.Transform(translation=(5, info_top)))
+            self.viewer.add_geom(self.subject_speed_label)
+
+        # Update the state of the frame
         self.subject_trans.set_translation(-subject_dis * scale, 0)
         self.subject_rot.set_rotation(-self.approach_angle / 180 * math.pi)
         self.target_trans.set_translation(-target_dis * scale, 0)
+        self.target_distance_label.set_text('Target Distance: ' + str(target_dis))
+        self.target_speed_label.set_text('Target Speed: ' + str(target_speed))
+        self.has_changed_speed_label.set_text('Has Changed Speed: ' + ('Yes' if has_changed_speed else 'No'))
+        self.subject_dis_label.set_text('Subject Distance: ' + str(subject_dis))
+        self.subject_speed_label.set_text('Subject Speed: ' + str(subject_speed))
         
         return self.viewer.render(return_rgb_array=mode == 'rgb_array')
 
@@ -223,11 +236,12 @@ if __name__ == "__main__":
     test.render()
     prev_time = time.time()
     while not test.step(2)[2]:
-        time.sleep(frame_duration - (time.time() - prev_time))
-        test.render()
+        time.sleep(max(frame_duration - (time.time() - prev_time), 0))
         prev_time = time.time()
+        test.render()
+        
     time.sleep(frame_duration - (time.time() - prev_time))
     test.render()
     
-    # input('press enter to close')
+    input('press enter to close')
 
