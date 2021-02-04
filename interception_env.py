@@ -131,18 +131,21 @@ class InterceptionEnv(gym.Env):
     def render(self, mode='human'):
         target_dis, target_speed, has_changed_speed, subject_dis, subject_speed = self.state
 
-        screen_width = 800
-        screen_height = 400
-
-        scale = (1 / (self.intercept_threshold / 2)) * 1.5
+        scale = (1 / (self.intercept_threshold / 2)) * 3
         
         if self.viewer is None:
             from gym.envs.classic_control import rendering
+            
+            screen_width = int((-math.cos(max(self.approach_angle_list) * math.pi / 180) * self.subject_max_position + self.target_init_distance) * scale + 20)
+            screen_height = int((math.sin(min(self.approach_angle_list) * math.pi / 180) * self.subject_max_position) * scale + 100)
+            print()
+            
+
             self.viewer = rendering.Viewer(screen_width, screen_height)
 
-            world_origin = rendering.Transform(translation=(screen_width / 2, screen_height / 3))
+            world_origin = rendering.Transform(translation=(self.target_init_distance * scale + 10, 90))
 
-            background = rendering.make_polygon([(0,0), (screen_height*2, 0), (screen_height*2, screen_width*2), (0, screen_width*2)])
+            background = rendering.make_polygon([(0, 0), (screen_width, 0), (screen_width, screen_height), (0, screen_height)])
             background.set_color(0, 0, 0)
             self.viewer.add_geom(background)
 
@@ -205,5 +208,5 @@ if __name__ == "__main__":
     time.sleep(frame_duration - (time.time() - prev_time))
     test.render()
     
-    input('press enter to close')
+    # input('press enter to close')
 
