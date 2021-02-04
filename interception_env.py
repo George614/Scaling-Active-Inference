@@ -135,12 +135,33 @@ class InterceptionEnv(gym.Env):
         
         if self.viewer is None:
             from gym.envs.classic_control import rendering
+            import freetype as ft
+
+            # change the filename if necessary
+            face = ft.Face("Vera.ttf")
+            # the size is specified in 1/64 pixel
+            face.set_char_size(48*64)
+            # initialize Stroker
+            stroker = ft.Stroker()
+            # change the outline size if necessary
+            stroker.set(1, ft.FT_STROKER_LINECAPS['FT_STROKER_LINECAP_ROUND'], ft.FT_STROKER_LINEJOINS['FT_STROKER_LINEJOIN_ROUND'], 0)
+            # override default load flags to avoid rendering the character during loading
+            face.load_char('S', ft.FT_LOAD_FLAGS['FT_LOAD_DEFAULT'])
+            # initialize C FreeType Glyph object
+            glyph = ft.FT_Glyph()
+            # extract independent glyph from the face
+            ft.FT_Get_Glyph(face.glyph._FT_GlyphSlot, ft.byref(glyph))
+            # initialize Python FreeType Glyph object
+            glyph = ft.Glyph(glyph)
+            # stroke border and check errors
+            error = ft.FT_Glyph_StrokeBorder(ft.byref(glyph._FT_Glyph), stroker._FT_Stroker, False, False)
+            if error:
+                raise ft.FT_Exception(error)
+            # bitmapGlyph is the rendered glyph that we want
+            bitmapGlyph = glyph.to_bitmap(ft.FT_RENDER_MODES['FT_RENDER_MODE_NORMAL'], 0)
             
             screen_width = int((-math.cos(max(self.approach_angle_list) * math.pi / 180) * self.subject_max_position + self.target_init_distance) * scale + 20)
             screen_height = int((math.sin(min(self.approach_angle_list) * math.pi / 180) * self.subject_max_position) * scale + 100)
-            print()
-            
-
             self.viewer = rendering.Viewer(screen_width, screen_height)
 
             world_origin = rendering.Transform(translation=(self.target_init_distance * scale + 10, 90))
