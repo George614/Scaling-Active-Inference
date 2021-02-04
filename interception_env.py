@@ -131,7 +131,7 @@ class InterceptionEnv(gym.Env):
     def render(self, mode='human'):
         target_dis, target_speed, has_changed_speed, subject_dis, subject_speed = self.state
 
-        screen_width = 1000
+        screen_width = 800
         screen_height = 400
 
         scale = (1 / (self.intercept_threshold / 2)) * 1.5
@@ -142,6 +142,10 @@ class InterceptionEnv(gym.Env):
 
             world_origin = rendering.Transform(translation=(screen_width / 2, screen_height / 3))
 
+            background = rendering.make_polygon([(0,0), (screen_height*2, 0), (screen_height*2, screen_width*2), (0, screen_width*2)])
+            background.set_color(0, 0, 0)
+            self.viewer.add_geom(background)
+
             subject = rendering.make_circle(self.intercept_threshold / 2 * scale)
             subject.set_color(0, 1, 0)
             self.subject_trans = rendering.Transform()
@@ -149,13 +153,27 @@ class InterceptionEnv(gym.Env):
             self.subject_rot = rendering.Transform()
             subject.add_attr(self.subject_rot)
             subject.add_attr(world_origin)
-            self.viewer.add_geom(subject)
+
+            subject_path = rendering.Line(start=(-1000, 0), end=(1000, 0))
+            subject_path.set_color(0.5, 0.5, 0.5)
+            subject_path.add_attr(rendering.LineStyle(0xFF80))
+            subject_path.add_attr(self.subject_rot)
+            subject_path.add_attr(world_origin)
 
             target = rendering.make_circle(self.intercept_threshold / 2 * scale)
             target.set_color(1, 0, 0)
             self.target_trans = rendering.Transform()
             target.add_attr(self.target_trans)
             target.add_attr(world_origin)
+
+            target_path = rendering.Line(start=(-1000, 0), end=(1000, 0))
+            target_path.set_color(0.5, 0.5, 0.5)
+            target_path.add_attr(rendering.LineStyle(0xFF80))
+            target_path.add_attr(world_origin)
+
+            self.viewer.add_geom(subject_path)
+            self.viewer.add_geom(target_path)
+            self.viewer.add_geom(subject)
             self.viewer.add_geom(target)
 
         self.subject_trans.set_translation(-subject_dis * scale, 0)
@@ -184,6 +202,8 @@ if __name__ == "__main__":
         time.sleep(frame_duration - (time.time() - prev_time))
         test.render()
         prev_time = time.time()
+    time.sleep(frame_duration - (time.time() - prev_time))
+    test.render()
     
     input('press enter to close')
 
