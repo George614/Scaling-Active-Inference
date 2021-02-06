@@ -1,0 +1,7 @@
+# required packages for this repo
+freetype
+gym
+gym_recording # https://github.com/openai/gym-recording
+numpy
+matplotlib
+tensorflow-gpu>=2.0.0
