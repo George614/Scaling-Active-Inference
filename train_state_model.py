@@ -50,6 +50,13 @@ def config4performance(dataset, batch_size=32, buffer_size=1024):
 if __name__ == "__main__":
     print("training data path: ", args.data_path)
     all_data = np.load(args.data_path + "/all_data.npy", allow_pickle=True)
+    
+    # for MountainCar data, map the action values from {0, 2} to {-1, 1}
+    a_idx_left = all_data[:, :, 2] == 0
+    a_idx_right = all_data[:, :, 2] == 2
+    all_data[a_idx_left, 2] = -1
+    all_data[a_idx_right, 2] = 1
+    
     train_dataset = tf.data.Dataset.from_tensor_slices(all_data)
     train_dataset = train_dataset.shuffle(buffer_size=args.buffer_size).batch(args.vae_batch_size)
     model_save_path = "results/{}/{}/vae_ai".format(args.exp_name, args.env_name)
@@ -110,6 +117,7 @@ if __name__ == "__main__":
     path = "D:/Projects/TF2_ML/openai.gym.human3"
     d_human = np.load(path+'/all_data.npy', allow_pickle=True)
     d_human = d_human[1:]
+    
     # make the temporal length of human data to be the length of the
     # longest episode
     pad_length = None
@@ -118,6 +126,13 @@ if __name__ == "__main__":
             pad_length = i
             break
     d_human = d_human[:, :pad_length, :]
+
+    # for MountainCar data, map the action values from {0, 2} to {-1, 1}
+    a_idx_left = d_human[:, :, 2] == 0
+    a_idx_right = d_human[:, :, 2] == 2
+    d_human[a_idx_left, 2] = -1
+    d_human[a_idx_right, 2] = 1
+    
     batch_tune = len(d_human)
     opt.__setattr__('learning_rate', args.vae_learning_rate*0.3)
     human_data = tf.data.Dataset.from_tensor_slices(d_human)

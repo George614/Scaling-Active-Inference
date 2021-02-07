@@ -22,6 +22,7 @@ PARSER.add('--vae_batch_size', required=True, type=int, help='batch size for vae
 PARSER.add('--vae_learning_rate', required=True, type=float, help='vae learning rate')
 PARSER.add('--vae_kl_tolerance', required=True, type=float, help='vae kl tolerance for clipping')
 PARSER.add('--vae_kl_weight', required=True, type=float, help='vae kl-d weight')
+PARSER.add('--vae_kl_regularize_weight', required=True, type=float, help='vae kl-d regularizer weight')
 PARSER.add('--vae_num_epoch', required=True, type=int, help='vae num epoch for training')
 PARSER.add('--vae_optimizer', type=str, help='Adam, RMSprop, SGD.', default='Adam')
 

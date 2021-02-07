@@ -116,6 +116,7 @@ class StateModel(tf.Module):
         self.dim_obv = args.o_size  # observation size
         self.a_size = args.a_width
         self.kl_weight = args.vae_kl_weight
+        self.kl_regularize_weight = args.vae_kl_regularize_weight
         self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='transition')
         self.posterior = Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, name='posterior')
         # self.likelihood = Likelihood(self.dim_z, self.dim_obv)
@@ -157,22 +158,25 @@ class StateModel(tf.Module):
         # MSE loss
         # mse_loss = self.mse(o_reconst[mask], o_cur[mask])
         
-        tf.print("---------posterior mu--------")
-        tf.print(mu_post[mask])
-        tf.print("---------transition mu--------")
-        tf.print(mu_tran[mask])
-        tf.print("--------posterior std--------")
-        tf.print(std_post[mask])
-        tf.print("--------transition std--------")
-        tf.print(std_tran[mask])
+        # tf.print("---------posterior mu--------")
+        # tf.print(mu_post[mask])
+        # tf.print("---------transition mu--------")
+        # tf.print(mu_tran[mask])
+        # tf.print("--------posterior std--------")
+        # tf.print(std_post[mask])
+        # tf.print("--------transition std--------")
+        # tf.print(std_tran[mask])
         
         # Guassian log-likelihood loss for reconstruction of observation
         gnll = self.g_nll(mu_o[mask], std_o[mask], o_cur[mask])
 
         # KL Divergence loss
         kld = kl_d(mu_post[mask], std_post[mask], mu_tran[mask], std_tran[mask])
+        standard_mean = mu_post[mask] * 0.0
+        standard_std = std_post[mask] * 0.0 + 1.0
+        kld_regularize = kl_d(mu_post[mask], std_post[mask], standard_mean, standard_std)
 
-        total_loss = self.kl_weight * kld + gnll
+        total_loss = self.kl_weight * kld + self.kl_regularize_weight * kld_regularize + gnll
         
         return total_loss, gnll, kld, state_post
     
@@ -204,8 +208,8 @@ class Planner(tf.Module):
         self.gamma = args.planner_gamma  # temperature factor applied to the EFE before calculate belief about policies
         self.n_actions = args.n_actions  # for discrete action space, specify the number of possible actions
         self.n_pi = self.n_actions ** self.D
-        self.action_space = tf.constant([0, 2], dtype=tf.float32) #TODO change it to a general setting
-        self.action = tf.constant([0], dtype=tf.float32)
+        self.action_space = tf.constant([-1, 1], dtype=tf.float32) #TODO change it to a general setting
+        self.action = tf.constant([-1], dtype=tf.float32)
         # whether or not use the effects of switching to another policy
         self.include_extened_efe = args.planner_full_efe
         # self.true_state is the single true state of the agent/model
@@ -335,8 +339,9 @@ class Planner(tf.Module):
             # rollout for each branch, only for finite discretized actions
             for idx_b in range(self.n_actions ** (d+1)):
                 action = self.action_space[idx_b % self.n_actions]
-                if action == 1:
-                    action = 2
+                # convert action from index to the actual value
+                if action == 0:
+                    action = -1
                 rolling_states = self.stage_states[idx_b]
                 # plan for K steps in a roll (repeat an action K times given a policy)
                 for t in range(self.K):
@@ -374,21 +379,21 @@ class Planner(tf.Module):
         
         # sample a policy given probabilities of each policy
         # prob_pi = tf.math.softmax(-self.gamma * efe_root)
-        # self.action =  np.random.choice([0, 2], p=prob_pi.numpy())
+        # self.action =  np.random.choice([-1, 1], p=prob_pi.numpy())
         
         # use the policy with the lowest efe value
         self.action = tf.argmin(efe_root)
         self.action = tf.cast(tf.reshape(self.action, [-1]), dtype=tf.float32)
         
         if self.action < 4:
-            self.action = tf.constant([0], dtype=tf.float32)
+            self.action = tf.constant([-1], dtype=tf.float32)
         else:
-            self.action = tf.constant([2], dtype=tf.float32)
+            self.action = tf.constant([1], dtype=tf.float32)
         
         ### the block below is previous code for 2 policies
         # # account for the omission of actoion 1 for MountainCar
-        # if self.action == 1:
-        #     self.action = tf.constant([2], dtype=tf.float32)
+        # if self.action == 0:
+        #     self.action = tf.constant([-1], dtype=tf.float32)
         
         print("self.action: ", self.action.numpy())
         return self.action

@@ -22,6 +22,13 @@ if __name__ == '__main__':
     model_path_name = "results/{}/{}/vae_ai".format(args.exp_name, args.env_name)
     loadedModel = tf.saved_model.load(model_path_name)
     human_data = np.load("D:\\Projects\\TF2_ML\\openai.gym.human3\\all_data.npy", allow_pickle=True)
+    
+    # for MountainCar data, map the action values from {0, 2} to {-1, 1}
+    a_idx_left = human_data[:, :, 2] == 0
+    a_idx_right = human_data[:, :, 2] == 2
+    human_data[a_idx_left, 2] = -1
+    human_data[a_idx_right, 2] = 1
+
     human_data = tf.convert_to_tensor(human_data[1:], dtype=tf.float32)
     n_episode = tf.shape(human_data)[0]
     len_episode = tf.shape(human_data)[1]
@@ -53,8 +60,8 @@ if __name__ == '__main__':
 
     #%%
     #  create planner using the trained AI state model and human prior preference
-    planner = Planner(loadedModel, args, end_state_mean, s_std_prefer=end_state_std)
-    # planner = Planner(loadedModel, args, end_state_mean)
+    # planner = Planner(loadedModel, args, end_state_mean, s_std_prefer=end_state_std)
+    planner = Planner(loadedModel, args, end_state_mean)
     env = gym.make('MountainCar-v0').env
     for i_episode in range(20):
         print("starting new episode...")
@@ -64,7 +71,10 @@ if __name__ == '__main__':
             print("Observation: ", observation)
             # only give the planner the position as observation
             action = planner(tf.convert_to_tensor(observation[0:1], dtype=tf.float32))
-            action = 0 if action.numpy() == 0 else 2
+            if action.numpy() == -1:
+                action = 0
+            elif action.numpy() == 1:
+                action = 2
             observation, reward, done, info = env.step(action)
             if done:
                 print("Episode finished after {} timesteps".format(t+1))
