@@ -146,7 +146,7 @@ class StateModel(tf.Module):
     def __call__(self, s_prev, a_prev, o_cur, mask):
         ''' forward function of the AIF state model used during training '''
         # add some noise to the observation
-        o_cur_batch = o_cur #+ tf.random.normal(tf.shape(o_cur)) * 0.1
+        o_cur_batch = o_cur + tf.random.normal(tf.shape(o_cur), stddev=0.05)
         print("s_prev in stateModel: ", s_prev)
         print("a_prev in stateModel: ", a_prev)
         _, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
@@ -186,12 +186,13 @@ class StateModel(tf.Module):
                                   tf.TensorSpec(shape=None, dtype=tf.float32)])
     def serve(self, s_prev, a_prev, o_cur):
         ''' forward function of the AIF state model used during inference '''
+        o_cur += tf.random.normal(tf.shape(o_cur), stddev=0.05)  # add noise
         state_tran, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
-        # o_reconst = self.likelihood(state_tran)
-        o_reconst, mu_o, std_o = self.likelihood(state_tran)
+        o_reconst_tran, mu_o_tran, std_o_tran = self.likelihood(state_tran)
         state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur], axis=-1))
+        o_reconst_post, mu_o_post, std_o_post = self.likelihood(state_post)
         
-        return state_tran, o_reconst, state_post
+        return state_tran, state_post, mu_o_tran, mu_o_post
 
 
 class Planner(tf.Module):
@@ -308,6 +309,7 @@ class Planner(tf.Module):
         # take current observation, previous action and previous true state to calculate
         # current true state using the posterior model
         a_prev = tf.expand_dims(self.action, axis=0)
+        cur_obv += tf.random.normal(tf.shape(cur_obv), stddev=0.05) # add noise
         cur_obv = tf.expand_dims(cur_obv, axis=0)
         multiples = tf.constant((self.N, 1), dtype=tf.int32)
         a_prev = tf.tile(a_prev, multiples)
