@@ -115,7 +115,7 @@ class StateModel(tf.Module):
         self.dim_z = args.z_size  # latent space size
         self.dim_obv = args.o_size  # observation size
         self.a_size = args.a_width
-        self.kl_weight = args.vae_kl_weight
+        self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
         self.kl_regularize_weight = args.vae_kl_regularize_weight
         self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='transition')
         self.posterior = Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, name='posterior')
@@ -209,8 +209,8 @@ class Planner(tf.Module):
         self.gamma = args.planner_gamma  # temperature factor applied to the EFE before calculate belief about policies
         self.n_actions = args.n_actions  # for discrete action space, specify the number of possible actions
         self.n_pi = self.n_actions ** self.D
-        self.action_space = tf.constant([-1, 1], dtype=tf.float32) #TODO change it to a general setting
-        self.action = tf.constant([-1], dtype=tf.float32)
+        self.action_space = tf.constant([0, 1], dtype=tf.float32) #TODO change it to a general setting
+        self.action = 0
         # whether or not use the effects of switching to another policy
         self.include_extened_efe = args.planner_full_efe
         # self.true_state is the single true state of the agent/model
@@ -308,7 +308,9 @@ class Planner(tf.Module):
         
         # take current observation, previous action and previous true state to calculate
         # current true state using the posterior model
-        a_prev = tf.expand_dims(self.action, axis=0)
+        a_prev = np.zeros((1, self.n_actions), dtype=np.float32)
+        a_prev[:, self.action] = 1
+        a_prev = tf.convert_to_tensor(a_prev)
         cur_obv += tf.random.normal(tf.shape(cur_obv), stddev=0.05) # add noise
         cur_obv = tf.expand_dims(cur_obv, axis=0)
         multiples = tf.constant((self.N, 1), dtype=tf.int32)
@@ -340,18 +342,21 @@ class Planner(tf.Module):
             
             # rollout for each branch, only for finite discretized actions
             for idx_b in range(self.n_actions ** (d+1)):
-                action = self.action_space[idx_b % self.n_actions]
-                # convert action from index to the actual value
-                if action == 0:
-                    action = -1
+                action = idx_b % self.n_actions
+                # convert action to one-hot encoded vector
+                action_onehot = np.zeros((1, self.n_actions))
+                action_onehot[:, action] = 1
+                multiples = tf.constant((self.N, 1), dtype=tf.int32)
+                action_t = tf.tile(action_onehot, multiples)
+
                 rolling_states = self.stage_states[idx_b]
+
                 # plan for K steps in a roll (repeat an action K times given a policy)
                 for t in range(self.K):
-                    action_t = action * tf.ones((self.N, 1))
                     # use only the transition model to rollout the states
                     rolling_states, _, _ = self.stateModel.transition(tf.concat([rolling_states, action_t], axis=-1))
                     # use the likelihood model to map states to observations
-                    obvSamples = self.stateModel.likelihood(rolling_states)
+                    obvSamples, o_mu_batch, o_std_batch = self.stateModel.likelihood(rolling_states)
                     # gather batch statistics
                     states_mean = tf.math.reduce_mean(rolling_states, axis=0)
                     states_std = tf.math.reduce_std(rolling_states, axis=0)
@@ -381,21 +386,16 @@ class Planner(tf.Module):
         
         # sample a policy given probabilities of each policy
         # prob_pi = tf.math.softmax(-self.gamma * efe_root)
-        # self.action =  np.random.choice([-1, 1], p=prob_pi.numpy())
+        # self.action =  np.random.choice([0, 1], p=prob_pi.numpy())
         
         # use the policy with the lowest efe value
         self.action = tf.argmin(efe_root)
         self.action = tf.cast(tf.reshape(self.action, [-1]), dtype=tf.float32)
         
         if self.action < 4:
-            self.action = tf.constant([-1], dtype=tf.float32)
+            self.action = 0
         else:
-            self.action = tf.constant([1], dtype=tf.float32)
+            self.action = 1
         
-        ### the block below is previous code for 2 policies
-        # # account for the omission of actoion 1 for MountainCar
-        # if self.action == 0:
-        #     self.action = tf.constant([-1], dtype=tf.float32)
-        
-        print("self.action: ", self.action.numpy())
+        print("self.action: ", self.action)
         return self.action

@@ -8,8 +8,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL
 logging.getLogger('tensorflow').setLevel(logging.FATAL)
 
 import tensorflow as tf
+from datetime import datetime
 from utils import PARSER
-from AI_model import StateModel, Planner
+from AI_model import StateModel
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -47,15 +48,35 @@ def config4performance(dataset, batch_size=32, buffer_size=1024):
     return dataset
 
 
+def frange_cycle_linear(n_iter, start=0.0, stop=1.0,  n_cycle=4, ratio=0.5):
+    ''' Cyclical Annealing Schedule: A Simple Approach to Mitigating {KL}
+    Vanishing. Fu etal NAACL 2019 '''
+    L = np.ones(n_iter) * stop
+    period = n_iter/n_cycle
+    step = (stop-start)/(period*ratio) # linear schedule
+
+    for c in range(n_cycle):
+        v, i = start, 0
+        while v <= stop and (int(i+c*period) < n_iter):
+            L[int(i+c*period)] = v
+            v += step
+            i += 1
+    return L
+
+
 if __name__ == "__main__":
     print("training data path: ", args.data_path)
     all_data = np.load(args.data_path + "/all_data.npy", allow_pickle=True)
     
-    # for MountainCar data, map the action values from {0, 2} to {-1, 1}
-    a_idx_left = all_data[:, :, 2] == 0
+    # for MountainCar data, map the action values from {0, 2} to {0, 1}
+    # then one-hot encoded the action vector
+    all_data = all_data[:, 1:, :]  # exclude first sample with empty action
     a_idx_right = all_data[:, :, 2] == 2
-    all_data[a_idx_left, 2] = -1
     all_data[a_idx_right, 2] = 1
+    all_actions = all_data[:, :, 2].reshape(-1)
+    all_actions_onehot = tf.keras.utils.to_categorical(all_actions)
+    all_actions_onehot = np.reshape(all_actions_onehot, (all_data.shape[0], all_data.shape[1], args.a_width))
+    all_data = np.concatenate((all_data[:, :, 0:1], all_actions_onehot), axis=-1)
     
     train_dataset = tf.data.Dataset.from_tensor_slices(all_data)
     train_dataset = train_dataset.shuffle(buffer_size=args.buffer_size).batch(args.vae_batch_size)
@@ -64,7 +85,8 @@ if __name__ == "__main__":
         os.makedirs(model_save_path)
     
     # use tensorboard for monitoring training if needed
-    tensorboard_dir = os.path.join(model_save_path, 'tensorboard')
+    now = datetime.now()
+    tensorboard_dir = os.path.join(model_save_path, 'tensorboard', now.strftime("%b-%d-%Y %H-%M-%S"))
     summary_writer = tf.summary.create_file_writer(tensorboard_dir)
     summary_writer.set_as_default()
     opt = tf.keras.optimizers.get(args.vae_optimizer)
@@ -75,29 +97,30 @@ if __name__ == "__main__":
     # fake data
     # x_fake = tf.random.normal((1024, 100, 8))  # batch x seq_length x data_dim
     total_train_steps = 0
+    n_iters = (len(all_data) // args.vae_batch_size) * args.vae_num_epoch
+    beta_array = frange_cycle_linear(n_iters, start=0.0, stop=args.vae_kl_weight, n_cycle=8, ratio=0.5)
 
     for epoch in range(args.vae_num_epoch):
         print("=================== Epoch {} ==================".format(epoch+1))
         loss_accum = 0
         for training_step, x_batch in enumerate(train_dataset):
             # split the batch data into observation and action (disgard reward for now)
-            o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 2:3] # x_batch[:, :, 3:4]
+            o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 1:]
             # if stateModel.posterior.mu is None:
             #     initial_states = tf.random.normal((args.vae_batch_size, args.z_size))
             # else:
             #     initial_states = stateModel.posterior.mu + stateModel.posterior.std * tf.random.normal((args.vae_batch_size, args.z_size))
             initial_states = tf.zeros((args.vae_batch_size, args.z_size))
-            initial_actions = np.zeros((args.vae_batch_size, args.a_width))
-            # idx_rand_action = np.random.uniform(size=args.vae_batch_size) > 0.5
-            # initial_actions[idx_rand_action, :] = 2
-            initial_actions = tf.convert_to_tensor(initial_actions, dtype=tf.float32)
+            # initial_actions = tf.zeros((args.vae_batch_size, args.a_width))
+
+            # stateModel.kl_weight.assign(beta_array[total_train_steps])
             
             for time_step in range(tf.shape(o_cur_batch)[1]):
                 if time_step == 0:
                     loss_episode = 0
                     gnll_episode = 0
                     kld_episode = 0
-                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, initial_actions, o_cur_batch[:, 0, :])
+                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, a_prev_batch[:, 0, :], o_cur_batch[:, 0, :])
                 else:
                     total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
                 loss_episode += total_loss.numpy()
@@ -108,12 +131,17 @@ if __name__ == "__main__":
             tf.summary.scalar('total', loss_episode, step=total_train_steps)
             tf.summary.scalar('gnll', gnll_episode, step=total_train_steps)
             tf.summary.scalar('kld', kld_episode, step=total_train_steps)
+            tf.summary.scalar('kld_weight', beta_array[total_train_steps-1], step=total_train_steps)
             print("training_step {}, total_loss: {:.3f}, gnll: {:.3f}, kld: {:.3f}".format(training_step+1, loss_episode, gnll_episode, kld_episode))
             # loss_accum += loss_episode
             # print("training_step {}, loss: {:.4f}".format(training_step+1, loss_accum / (training_step+1)))
     
+    # save the trained model
+    tf.saved_model.save(stateModel, model_save_path)
+    print("> Finished training. Model saved in: ", model_save_path)
+
     #%% fine-tune with human data
-    fine_tune_epoch = 100
+    fine_tune_epoch = 800
     path = "D:/Projects/TF2_ML/openai.gym.human3"
     d_human = np.load(path+'/all_data.npy', allow_pickle=True)
     d_human = d_human[1:]
@@ -125,58 +153,55 @@ if __name__ == "__main__":
         if np.alltrue(d_human[:, i, :] == 0):
             pad_length = i
             break
-    d_human = d_human[:, :pad_length, :]
+    d_human = d_human[:, 1:pad_length, :] # exclude first sample with empty action
 
-    # for MountainCar data, map the action values from {0, 2} to {-1, 1}
-    a_idx_left = d_human[:, :, 2] == 0
+    # for MountainCar data, map the action values from {0, 2} to {0, 1}
+    # then one-hot encoded the action vector
     a_idx_right = d_human[:, :, 2] == 2
-    d_human[a_idx_left, 2] = -1
     d_human[a_idx_right, 2] = 1
-    
+    all_actions = d_human[:, :, 2].reshape(-1)
+    all_actions_onehot = tf.keras.utils.to_categorical(all_actions)
+    all_actions_onehot = np.reshape(all_actions_onehot, (d_human.shape[0], d_human.shape[1], args.a_width))
+    d_human = np.concatenate((d_human[:, :, 0:1], all_actions_onehot), axis=-1)
+
     batch_tune = len(d_human)
-    opt.__setattr__('learning_rate', args.vae_learning_rate*0.3)
+    opt.__setattr__('learning_rate', args.vae_learning_rate)
     human_data = tf.data.Dataset.from_tensor_slices(d_human)
     human_data = human_data.shuffle(len(d_human)).batch(batch_tune, drop_remainder=True)
+    tune_iters = (len(d_human) // batch_tune) * fine_tune_epoch
+    beta_array_tune = frange_cycle_linear(tune_iters, start=0.0, stop=args.vae_kl_weight, n_cycle=4, ratio=0.5)
+    total_tuning_steps = 0
     print("Starting fine-tuning...")
-    
-    # @tf.function
-    def train_step_ft(model, optimizer, s_prev, a_prev, o_cur):
-        ''' fine-tune the VAE-AI model '''
-        # mask out zero samples from shorter sequences
-        mask = tf.not_equal(o_cur[:, 0], 0)
-        # tf.print(mask)
-        with tf.GradientTape() as tape:
-            total_loss, gnll, kld, state_post = model(s_prev, a_prev, o_cur, mask)
-        gradients = tape.gradient(total_loss, model.trainable_variables)
-        # use back-prop algorithms for optimization for now
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-        return total_loss, gnll, kld, state_post
 
     for epoch in range(fine_tune_epoch):
         print("=================== Epoch {} ==================".format(epoch+1))
         loss_accum = 0
         for training_step, x_batch in enumerate(human_data):
             # split the batch data into observation and action (disgard reward for now)
-            o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 2:3] # x_batch[:, :, 3:4]
+            o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 1:]
             initial_states = tf.zeros((batch_tune, args.z_size))
-            initial_actions = tf.zeros((len(x_batch), args.a_width))
+            
+            stateModel.kl_weight.assign(beta_array_tune[total_tuning_steps])
             
             for time_step in range(tf.shape(o_cur_batch)[1]):
                 if time_step == 0:
                     loss_episode = 0
                     gnll_episode = 0
                     kld_episode = 0
-                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, initial_actions, o_cur_batch[:, 0, :])
+                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, a_prev_batch[:, 0, :], o_cur_batch[:, 0, :])
                 else:
                     total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
                 loss_episode += total_loss.numpy()
                 gnll_episode += gnll.numpy()
                 kld_episode += kld.numpy()
             
+            total_tuning_steps += 1
             print("training_step {}, total_loss: {:.3f}, gnll: {:.3f}, kld: {:.3f}".format(training_step+1, loss_episode, gnll_episode, kld_episode))
     
-    # save the trained model
+    # save the fine-tuned model
+    model_save_path = model_save_path + '/fine-tune'
+    if not os.path.exists(model_save_path):
+        os.makedirs(model_save_path)
     tf.saved_model.save(stateModel, model_save_path)
-    print("> Finished training. Model saved in: ", model_save_path)
-    # evaluate the model using the reconstruction error (on observation)
+    print("> Finished fine-tuning. Model saved in: ", model_save_path)
+    

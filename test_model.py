@@ -10,7 +10,7 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 
 import tensorflow as tf
 from utils import PARSER
-from AI_model import StateModel, Planner
+from AI_model import StateModel
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -43,18 +43,22 @@ def train_step(model, optimizer, s_prev, a_prev, o_cur):
 if __name__ == "__main__":
     path = "D:/Projects/TF2_ML/openai.gym.human3"
     d_human = np.load(path+'/all_data.npy', allow_pickle=True)
-    d_human = d_human[1]
+    d_human = d_human[40] # take only 1 episode
     pad_length = None
     for i in range(np.shape(d_human)[0]):
         if np.alltrue(d_human[i, :] == 0):
             pad_length = i
             break
-    d_human = d_human[:pad_length, :]
-    # for MountainCar data, map the action values from {0, 2} to {-1, 1}
-    a_idx_left = d_human[:, 2] == 0
+    # discard the first sample which doesn't contain a meaningful action
+    # and clip the sequence to exclude empty samples
+    d_human = d_human[1:pad_length, :]
+    # for MountainCar data, map the action values from {0, 2} to {0, 1}
+    # then one-hot encoded the action vector
     a_idx_right = d_human[:, 2] == 2
-    d_human[a_idx_left, 2] = -1
     d_human[a_idx_right, 2] = 1
+    all_actions = d_human[:, 2]
+    all_actions_onehot = tf.keras.utils.to_categorical(all_actions)
+    d_human = np.concatenate((d_human[:, 0:1], all_actions_onehot), axis=-1)
 
     human_data = tf.convert_to_tensor(d_human)
     model_save_path = "results/{}/{}/vae_ai".format(args.exp_name, args.env_name)
@@ -63,7 +67,7 @@ if __name__ == "__main__":
     
     # use tensorboard for monitoring training if needed
     now = datetime.now()
-    tensorboard_dir = os.path.join(model_save_path, 'tensorboard', now.strftime("%b-%d-%Y %H:%M:%S"))
+    tensorboard_dir = os.path.join(model_save_path, 'tensorboard', now.strftime("%b-%d-%Y %H-%M-%S"))
     summary_writer = tf.summary.create_file_writer(tensorboard_dir)
     summary_writer.set_as_default()
     opt = tf.keras.optimizers.get(args.vae_optimizer)
@@ -77,16 +81,15 @@ if __name__ == "__main__":
         print("\n=================== Epoch {} ==================".format(epoch+1))
         loss_accum = 0
         # split the batch data into observation and action (disgard reward for now)
-        o_cur_seq, a_seq = human_data[:, 0:1], human_data[:, 2:3] # x_batch[:, :, 3:4]
+        o_cur_seq, a_seq = human_data[:, 0:1], human_data[:, 1:]
         initial_states = tf.zeros((1, args.z_size))
-        initial_actions = tf.zeros((1, args.a_width))
         
         for time_step in range(tf.shape(o_cur_seq)[0]):
             if time_step == 0:
                 loss_episode = 0
                 gnll_episode = 0
                 kld_episode = 0
-                total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, initial_actions, o_cur_seq[0:1, :])
+                total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, a_seq[0:1, :], o_cur_seq[0:1, :])
             else:
                 total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_seq[time_step:time_step+1, :], o_cur_seq[time_step:time_step+1, :])
             loss_episode += total_loss.numpy()
@@ -106,26 +109,26 @@ if __name__ == "__main__":
 
     for time_step in range(tf.shape(o_cur_seq)[0]):
         if time_step == 0:
-            state_post, mu_s_post, std_s_post = stateModel.posterior(tf.concat([initial_states, initial_actions, o_cur_seq[0:1, :]], axis=-1))
-            state_tran, mu_s_tran, std_tran = stateModel.transition(tf.concat([mu_s_post, initial_actions], axis=-1))
+            state_post, mu_s_post, std_s_post = stateModel.posterior(tf.concat([initial_states, a_seq[0:1, :], o_cur_seq[0:1, :]], axis=-1))
+            state_tran, mu_s_tran, std_tran = stateModel.transition(tf.concat([mu_s_post, a_seq[0:1, :]], axis=-1))
         else:
-            state_post, mu_s_post, std_s_post = stateModel.posterior(tf.concat([state_post, a_seq[time_step:time_step+1, :], o_cur_seq[time_step:time_step+1, :]], axis=-1))
+            state_post, mu_s_post, std_s_post = stateModel.posterior(tf.concat([state_post, a_seq[time_step:time_step+1, :], o_rec_post], axis=-1))
             state_tran, mu_s_tran, std_tran = stateModel.transition(tf.concat([state_tran, a_seq[time_step:time_step+1, :]], axis=-1))
 
-        o_rec_post, mu_o_post, std_o_post = stateModel.likelihood(mu_s_post)
-        o_rec_tran, mu_o_tran, std_o_tran = stateModel.likelihood(mu_s_tran)
+        o_rec_post, mu_o_post, std_o_post = stateModel.likelihood(state_post)
+        o_rec_tran, mu_o_tran, std_o_tran = stateModel.likelihood(state_tran)
         o_rec_post_seq[time_step, :] = mu_o_post.numpy().squeeze()
         o_rec_tran_seq[time_step, :] = mu_o_tran.numpy().squeeze()
         state_post_seq[time_step, :] = mu_s_post.numpy().squeeze()
         state_tran_seq[time_step, :] = mu_s_tran.numpy().squeeze()
 
-    o_cur_seq = o_cur_seq.numpy().squeeze()
-    steps = len(o_cur_seq)
+    o_cur_seq_np = o_cur_seq.numpy().squeeze()
+    steps = len(o_cur_seq_np)
     fig = plt.figure(constrained_layout=True)
-    ymax = max(o_cur_seq.max(), o_rec_post_seq.max(), o_rec_tran_seq.max())
-    ymin = min(o_cur_seq.min(), o_rec_post_seq.min(), o_rec_tran_seq.min())
+    ymax = max(o_cur_seq_np.max(), o_rec_post_seq.max(), o_rec_tran_seq.max())
+    ymin = min(o_cur_seq_np.min(), o_rec_post_seq.min(), o_rec_tran_seq.min())
     ax = plt.axes(xlim=(0, steps), ylim=(ymin, ymax)) 
-    line1, = ax.plot(np.arange(steps), o_cur_seq, lw=1, linestyle="-", label="ground truth")
+    line1, = ax.plot(np.arange(steps), o_cur_seq_np, lw=1, linestyle="-", label="ground truth")
     line2, = ax.plot(np.arange(steps), o_rec_tran_seq, lw=1, linestyle="-.", label="transition model")
     line3, = ax.plot(np.arange(steps), o_rec_post_seq, lw=1, linestyle="--", label="posterior model")
     ax.legend(bbox_to_anchor=(0., 1.12, 1., .102), loc='lower left',
