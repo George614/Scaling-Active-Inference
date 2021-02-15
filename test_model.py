@@ -39,11 +39,26 @@ def train_step(model, optimizer, s_prev, a_prev, o_cur):
 
     return total_loss, gnll, kld, state_post
 
+def frange_cycle_linear(n_iter, start=0.0, stop=1.0,  n_cycle=4, ratio=0.5):
+    ''' Cyclical Annealing Schedule: A Simple Approach to Mitigating {KL}
+    Vanishing. Fu etal NAACL 2019 '''
+    L = np.ones(n_iter) * stop
+    period = n_iter/n_cycle
+    step = (stop-start)/(period*ratio) # linear schedule
+
+    for c in range(n_cycle):
+        v, i = start, 0
+        while v <= stop and (int(i+c*period) < n_iter):
+            L[int(i+c*period)] = v
+            v += step
+            i += 1
+    return L
+
 
 if __name__ == "__main__":
     path = "D:/Projects/TF2_ML/openai.gym.human3"
-    d_human = np.load(path+'/all_data.npy', allow_pickle=True)
-    d_human = d_human[40] # take only 1 episode
+    d_human = np.load(path+'/all_human_data.npy', allow_pickle=True)
+    d_human = d_human[1] # take only 1 episode
     pad_length = None
     for i in range(np.shape(d_human)[0]):
         if np.alltrue(d_human[i, :] == 0):
@@ -75,31 +90,53 @@ if __name__ == "__main__":
 
     # initial our model using parameters in the config file
     stateModel = StateModel(args=args)
-
     n_epochs = 1000
+    beta_array = frange_cycle_linear(n_epochs, start=0.0, stop=args.vae_kl_weight, n_cycle=4, ratio=0.5)
+    total_steps = 0
+    
     for epoch in range(n_epochs):
         print("\n=================== Epoch {} ==================".format(epoch+1))
-        loss_accum = 0
         # split the batch data into observation and action (disgard reward for now)
         o_cur_seq, a_seq = human_data[:, 0:1], human_data[:, 1:]
         initial_states = tf.zeros((1, args.z_size))
         
-        for time_step in range(tf.shape(o_cur_seq)[0]):
-            if time_step == 0:
-                loss_episode = 0
-                gnll_episode = 0
-                kld_episode = 0
-                total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, a_seq[0:1, :], o_cur_seq[0:1, :])
-            else:
-                total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_seq[time_step:time_step+1, :], o_cur_seq[time_step:time_step+1, :])
-            loss_episode += total_loss.numpy()
-            gnll_episode += gnll.numpy()
-            kld_episode += kld.numpy()
+        stateModel.kl_weight.assign(beta_array[total_steps])
         
-        tf.summary.scalar('total', loss_episode, step=epoch)
-        tf.summary.scalar('gnll', gnll_episode, step=epoch)
-        tf.summary.scalar('kld', kld_episode, step=epoch)
-        print("\nEpoch {}, total_loss: {:.3f}, gnll: {:.3f}, kld: {:.3f}".format(epoch+1, loss_episode, gnll_episode, kld_episode))
+        # for time_step in range(tf.shape(o_cur_seq)[0]):
+        #     if time_step == 0:
+        #         loss_episode = 0
+        #         gnll_episode = 0
+        #         kld_episode = 0
+        #         total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, a_seq[0:1, :], o_cur_seq[0:1, :])
+        #     else:
+        #         total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_seq[time_step:time_step+1, :], o_cur_seq[time_step:time_step+1, :])
+        #     loss_episode += total_loss.numpy()
+        #     gnll_episode += gnll.numpy()
+        #     kld_episode += kld.numpy()
+
+        with tf.GradientTape() as tape:
+            for time_step in range(tf.shape(o_cur_seq)[0]):
+                mask = tf.not_equal(o_cur_seq[:, 0], 0)
+                if time_step == 0:
+                    loss_episode = 0
+                    gnll_episode = 0
+                    kld_episode = 0
+                    total_loss, gnll, kld, state_post = stateModel(initial_states, a_seq[0:1, :], o_cur_seq[0:1, :], mask[0:1])
+                else:
+                    total_loss, gnll, kld, state_post = stateModel(state_post, a_seq[time_step:time_step+1, :], o_cur_seq[time_step:time_step+1, :], mask[0:1])
+                loss_episode += total_loss
+                gnll_episode += gnll.numpy()
+                kld_episode += kld.numpy()
+        gradients = tape.gradient(loss_episode, stateModel.trainable_variables)
+        opt.apply_gradients(zip(gradients, stateModel.trainable_variables))
+        
+        total_steps += 1
+        # tf.summary.scalar('total', loss_episode, step=epoch)
+        tf.summary.scalar('total', loss_episode.numpy(), step=total_steps)
+        tf.summary.scalar('gnll', gnll_episode, step=total_steps)
+        tf.summary.scalar('kld', kld_episode, step=total_steps)
+        tf.summary.scalar('kld_weight', beta_array[total_steps-1], step=total_steps)
+        print("\nEpoch {}, total_loss: {:.3f}, gnll: {:.3f}, kld: {:.3f}".format(epoch+1, loss_episode.numpy(), gnll_episode, kld_episode))
 
     #%% evaluate the VAE model using the reconstruction error (on observation)
     o_rec_post_seq = tf.zeros(tf.shape(o_cur_seq)).numpy()
