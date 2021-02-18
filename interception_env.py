@@ -116,15 +116,15 @@ class InterceptionEnv(gym.Env):
         self.state = (target_dis, target_speed, has_changed_speed, subject_dis, subject_speed)
         return np.array(self.state), reward, done, {}
 
-    def reset(self, target_speed_idx, approach_angle_idx):
+    def reset(self, target_speed_idx=0, approach_angle_idx=0):
         self.time_to_change_speed = self.np_random.uniform(low=2.5, high=3.25)
         self.approach_angle = self.approach_angle_list[approach_angle_idx]
-        target_init_speed = self.target_init_speed_list[target_speed_idx]
+        self.target_init_speed = self.target_init_speed_list[target_speed_idx]
         self.time = 0.0
         subject_init_distance = self.np_random.uniform(low=20, high=30)
         subject_init_speed = 0.0
         has_changed_speed = 0
-        self.state = np.asarray([self.target_init_distance, target_init_speed, has_changed_speed, subject_init_distance, subject_init_speed], dtype=np.float32)
+        self.state = np.asarray([self.target_init_distance, self.target_init_speed, has_changed_speed, subject_init_distance, subject_init_speed], dtype=np.float32)
         return np.array(self.state)
 
 
@@ -230,7 +230,7 @@ class InterceptionEnv(gym.Env):
 
 if __name__ == "__main__":
     test = InterceptionEnv()
-    test.reset(0, 0)
+    test.reset(target_speed_idx=2, approach_angle_idx=0)
     frame_duration = 1 / test.FPS
 
     test.render()
