@@ -66,7 +66,7 @@ def frange_cycle_linear(n_iter, start=0.0, stop=1.0,  n_cycle=4, ratio=0.5):
 
 if __name__ == "__main__":
     print("training data path: ", args.data_path)
-    all_data = np.load(args.data_path + "/all_data.npy", allow_pickle=True)
+    all_data = np.load(args.data_path + "/all_random_data.npy", allow_pickle=True)
     
     # for MountainCar data, map the action values from {0, 2} to {0, 1}
     # then one-hot encoded the action vector
@@ -98,11 +98,10 @@ if __name__ == "__main__":
     # x_fake = tf.random.normal((1024, 100, 8))  # batch x seq_length x data_dim
     total_train_steps = 0
     n_iters = (len(all_data) // args.vae_batch_size) * args.vae_num_epoch
-    beta_array = frange_cycle_linear(n_iters, start=0.0, stop=args.vae_kl_weight, n_cycle=8, ratio=0.5)
+    beta_array = frange_cycle_linear(n_iters, start=0.0, stop=args.vae_kl_weight, n_cycle=4, ratio=0.5)
 
     for epoch in range(args.vae_num_epoch):
         print("=================== Epoch {} ==================".format(epoch+1))
-        loss_accum = 0
         for training_step, x_batch in enumerate(train_dataset):
             # split the batch data into observation and action (disgard reward for now)
             o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 1:]
@@ -113,19 +112,47 @@ if __name__ == "__main__":
             initial_states = tf.zeros((args.vae_batch_size, args.z_size))
             # initial_actions = tf.zeros((args.vae_batch_size, args.a_width))
 
-            # stateModel.kl_weight.assign(beta_array[total_train_steps])
+            stateModel.kl_weight.assign(beta_array[total_train_steps])
             
-            for time_step in range(tf.shape(o_cur_batch)[1]):
-                if time_step == 0:
-                    loss_episode = 0
-                    gnll_episode = 0
-                    kld_episode = 0
-                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, a_prev_batch[:, 0, :], o_cur_batch[:, 0, :])
-                else:
-                    total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
-                loss_episode += total_loss.numpy()
-                gnll_episode += gnll.numpy()
-                kld_episode += kld.numpy()
+            # for time_step in range(tf.shape(o_cur_batch)[1]):
+            #     if time_step == 0:
+            #         loss_episode = 0
+            #         gnll_episode = 0
+            #         kld_episode = 0
+            #         total_loss, gnll, kld, state_post = train_step(stateModel, opt, initial_states, a_prev_batch[:, 0, :], o_cur_batch[:, 0, :])
+            #     else:
+            #         total_loss, gnll, kld, state_post = train_step(stateModel, opt, state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :])
+
+            #     loss_episode += total_loss.numpy()
+            #     gnll_episode += gnll.numpy()
+            #     kld_episode += kld.numpy()
+            
+            x_batches = [tf.split(x_batch, num_or_size_splits=2, axis=1)]
+            loss_episode = 0
+		    gnll_episode = 0
+		    kld_episode = 0
+            for x_batch in x_batches:
+            	o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 1:]
+	    		loss_accum = 0
+			    with tf.GradientTape() as tape:
+			    	for time_step in range(tf.shape(o_cur_batch)[1]):
+			    		mask = tf.not_equal(o_cur_batch[:, time_step, 0], 0)
+			    		if time_step == 0:
+			    			loss_chunk = 0
+		                    gnll_chunk = 0
+		                    kld_chunk = 0
+			    			total_loss, gnll, kld, state_post = stateModel(initial_states, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :], mask)
+			    		else:
+		        			total_loss, gnll, kld, state_post = stateModel(state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :], mask)
+			    		loss_chunk += total_loss
+			    		gnll_chunk += gnll.numpy()
+                		kld_chunk += kld.numpy()
+			    gradients = tape.gradient(loss_chunk, stateModel.trainable_variables)
+			    opt.apply_gradients(zip(gradients, stateModel.trainable_variables))
+
+			    loss_episode += loss_chunk.numpy()
+		    	gnll_episode += gnll_chunk
+		    	kld_episode += kld_chunk
             
             total_train_steps += 1
             tf.summary.scalar('total', loss_episode, step=total_train_steps)
@@ -133,17 +160,15 @@ if __name__ == "__main__":
             tf.summary.scalar('kld', kld_episode, step=total_train_steps)
             tf.summary.scalar('kld_weight', beta_array[total_train_steps-1], step=total_train_steps)
             print("training_step {}, total_loss: {:.3f}, gnll: {:.3f}, kld: {:.3f}".format(training_step+1, loss_episode, gnll_episode, kld_episode))
-            # loss_accum += loss_episode
-            # print("training_step {}, loss: {:.4f}".format(training_step+1, loss_accum / (training_step+1)))
     
     # save the trained model
     tf.saved_model.save(stateModel, model_save_path)
     print("> Finished training. Model saved in: ", model_save_path)
 
     #%% fine-tune with human data
-    fine_tune_epoch = 800
+    fine_tune_epoch = 1000
     path = "D:/Projects/TF2_ML/openai.gym.human3"
-    d_human = np.load(path+'/all_data.npy', allow_pickle=True)
+    d_human = np.load(path+'/all_human_data.npy', allow_pickle=True)
     d_human = d_human[1:]
     
     # make the temporal length of human data to be the length of the
