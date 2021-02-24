@@ -21,17 +21,54 @@ def kl_d(mu_p, std_p, mu_q, std_q):
     return kld
 
 
+@tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
+                               tf.TensorSpec(shape=None, dtype=tf.float32)])
+def mse(x_reconst, x_true):
+    ''' Mean Squared Error loss function'''
+    sse = tf.math.reduce_sum(tf.math.square(x_reconst - x_true), axis=-1)
+    return tf.math.reduce_mean(sse)
+
+
+@tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
+                              tf.TensorSpec(shape=None, dtype=tf.float32),
+                              tf.TensorSpec(shape=None, dtype=tf.float32)])
+def g_nll(mu, std, x_true):
+    ''' Gaussian Negative Log Likelihood loss function '''
+    nll = 0.5 * tf.math.log(2 * math.pi * tf.math.square(std)) + tf.math.square(x_true - mu) / (2 * tf.math.square(std))
+    return tf.reduce_mean(tf.reduce_sum(nll, axis=-1))
+
+
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
     ''' swish activation function '''
     return x * tf.math.sigmoid(x)
 
 
+@tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32, name='mean'),
+                              tf.TensorSpec(shape=None, dtype=tf.float32, name='std')])
+def sample(mu, std):
+    # reparameterization trick
+    z_sample = mu + std * tf.random.normal(tf.shape(std))
+    return z_sample
+
+
+@tf.function
+def sample_k_times(k, mu, std):
+    multiples = tf.constant((1, k, 1), dtype=tf.int32)
+    # shape of mu_, std_ and z_sample: (batch x n_samples x vec_dim)
+    mu_ = tf.tile(tf.expand_dims(mu, axis=1), multiples)
+    std_ = tf.tile(tf.expand_dims(std, axis=1), multiples)
+    # reparameterization trick
+    z_sample = mu_ + std_ * tf.random.normal(tf.shape(std_))
+    return z_sample
+
+
 class Encoder(tf.Module):
     ''' transition / posterior model of the active inference framework '''
-    def __init__(self, dim_input, dim_z, name='Encoder', activation='leaky_relu'):
+    def __init__(self, dim_input, dim_z, n_samples=1, name='Encoder', activation='leaky_relu'):
         super().__init__(name=name)
         self.dim_z = dim_z  # latent dimension
+        self.N = n_samples
         self.dense_input = Dense(dim_input, 20, name='dense_input')
         self.dense_e1 = Dense(20, 20, name='dense_1')
         self.dense_mu = Dense(20, dim_z, name='dense_mu')
@@ -45,11 +82,10 @@ class Encoder(tf.Module):
         elif activation == 'swish':
             self.activation = swish
         else:
-            raise ValueError('incorrect activation type')    
+            raise ValueError('incorrect activation type')
     
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
-        print("X in encoder", X)
         z = self.dense_input(X)
         z = self.activation(z)
         z = self.dense_e1(z)
@@ -66,6 +102,7 @@ class Encoder(tf.Module):
             self.mu.assign(mu)
             self.std.assign(std)
         z_sample = self.sample(mu, std)
+
         return z_sample, mu, std
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32, name='mean'),
@@ -76,16 +113,32 @@ class Encoder(tf.Module):
         z_sample = mu + std * tf.random.normal((batch_size, self.dim_z))
         return z_sample
 
+    @tf.function
+    def sample_k_times(self):
+        multiples = tf.constant((1, self.N, 1), dtype=tf.int32)
+        # shape of mu_, std_ and z_sample: (batch x n_samples x vec_dim)
+        mu_ = tf.tile(tf.expand_dims(self.mu, axis=1), multiples)
+        std_ = tf.tile(tf.expand_dims(self.std, axis=1), multiples)
+        # reparameterization trick
+        z_sample = mu_ + std_ * tf.random.normal(tf.shape(std_))
+        return z_sample
 
-class Likelihood(tf.Module):
-    ''' likelihood model of the active inference framework '''
-    def __init__(self, dim_input, dim_x, name='likelihood', activation='leaky_relu'):
+
+class FlexibleEncoder(tf.Module):
+    ''' Generic Gaussian encoder model based on Dense layer. Output mean and std as well
+    as samples from the learned distribution '''
+    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='leaky_relu'):
         super().__init__(name=name)
-        self.dim_x = dim_x
-        self.dense_z_input = Dense(dim_input, 20, name='dense_z_input')
-        self.dense_d1 = Dense(20, 20, name='dense_d1')
-        self.dense_output = Dense(20, self.dim_x, name='dense_x_output')
-        if activation == 'tanh': 
+        self.dim_z = layer_dims[-1]
+        self.N = n_samples
+        self.layers =[]
+        for i in range(len(layer_dims)-1):
+            self.layers.append(Dense(layer_dims[i], layer_dims[i+1]))
+        # add another group of neurons for mu/std in the last layer
+        self.layers.append(Dense(layer_dims[-2], self.dim_z))
+        self.mu = None
+        self.std = None
+        if activation == 'tanh':
             self.activation = tf.nn.tanh
         elif activation == 'leaky_relu':
             self.activation = tf.nn.leaky_relu
@@ -93,16 +146,121 @@ class Likelihood(tf.Module):
             self.activation = swish
         else:
             raise ValueError('incorrect activation type')
-       
+    
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
-    def __call__(self, z):
-        x_output = self.dense_z_input(z)
-        x_output = self.activation(x_output)
-        x_output = self.dense_d1(x_output)
-        x_output = self.activation(x_output)
-        x_output = self.dense_output(x_output)
-        return x_output
+    def __call__(self, x):
+        for layer in self.layers[:-2]:
+            x = layer(x)
+            x = self.activation(x)
+        mu = self.layers[-2](x)
+        raw_std = self.layers[-1](x)
+        # softplus is supposed to avoid numerical overflow
+        std = tf.clip_by_value(tf.math.softplus(raw_std), 0.01, 10.0)
+        if self.mu is None:
+            batch_size = tf.shape(x)[0]
+            self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
+            self.std = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
+        else:
+            self.mu.assign(mu)
+            self.std.assign(std)
+        z_sample = sample(mu, std)
 
+        return z_sample, mu, std
+
+
+class FlexibleMLP(tf.Module):
+    ''' Simple multi-layer perceptron model taking layer parameters as input '''
+    def __init__(self, layer_dims, name='MLP', activation='leaky_relu'):
+        super().__init__(name=name)
+        self.layers =[]
+        for i in range(len(layer_dims)-1):
+            self.layers.append(Dense(layer_dims[i], layer_dims[i+1]))
+        if activation == 'tanh':
+            self.activation = tf.nn.tanh
+        elif activation == 'leaky_relu':
+            self.activation = tf.nn.leaky_relu
+        elif activation == 'swish':
+            self.activation = swish
+        else:
+            raise ValueError('incorrect activation type')
+    
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
+    def __call__(self, x):
+        for layer in self.layers[:-1]:
+            x = layer(x)
+            x = self.activation(x)
+        x = self.layers[-1](x)  # linear activation for the last layer
+        return x
+
+
+class PPLModel(tf.Module):
+    '''
+    Prior Preference Learning model with Inverse Q-Learning. Learn EFE and
+    forward dynamics of an environment given learned prior preference from
+    human expert
+    '''
+    def __init__(self, priorModel, args):
+        super().__init__(name='PPLModel')
+        self.dim_z = args.z_size  # latent/state space size
+        self.dim_obv = args.o_size  # observation size
+        self.a_size = args.a_width  # action size
+        self.n_samples = args.vae_n_samples
+        self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
+        self.encoder = FlexibleEncoder((self.dim_obv, 64, 64, self.dim_z), name='Encoder')
+        self.decoder = FlexibleEncoder((self.dim_z, 64, 64, self.dim_obv), name='Decoder')
+        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 64, 64, self.dim_z), name='Transition')
+        self.EFEnet = FlexibleMLP((self.dim_z, 128, 64, self.a_size), name='EFEnet')
+        self.priorModel = priorModel
+        self.obv_t = None
+        self.a_t = None
+        self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
+
+
+    def __call__(self, obv_next):
+        if self.obv_t is None:
+            self.obv_t = tf.identity(obv_next)
+            return
+        
+        # action selection using o_t and EFE network
+        states, state_mu, state_std = self.encoder(self.obv_t)
+        efe_t = self.EFEnet(states)
+        if tf.random.uniform(shape=()) > self.epsilon:
+            action = tf.argmax(efe_t)
+        else:
+            action = tf.random.uniform(shape=(), maxval=self.a_size, dtype=tf.int32)
+        self.a_t = np.zeros((1, self.a_size,))
+        self.a_t[:, action] = 1
+
+        # run s_t and a_t through the PPL model
+        states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, self.a_t], axis=-1))
+        o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
+        o_next_prior, o_prior_mu, o_prior_std = self.priorModel(self.obv_t)
+        states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
+
+        # difference between preferred future and predicted future
+        # R_ti = kl_d(o_prior_mu, o_prior_std, o_next_mu, o_next_std)
+
+        # difference between preferred future and actual future, i.e. instrumental term
+        R_ti = g_nll(o_prior_mu, o_prior_std, obv_next)
+        # negative almost KL-D between state distribution from transition model and from
+        # approximate posterior model (encoder), i.e. epistemic value. Assumption is made.
+        R_te = -1.0 * kl_d(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std)
+        R_t = R_ti + R_te
+
+        # model reconstruction loss
+        loss_model = g_nll(o_next_mu, o_next_std, obv_next)
+        # EFE values for next state, s_t+1 is from transition model instead of encoder
+        efe_next = self.EFEnet(states_next_tran)
+        idx_a_next = tf.argmax(efe_next, axis=-1)
+        onehot_a_next = np.zeros((1, self.a_size,))
+        onehot_a_next[:, idx_a_next] = 1
+        
+        loss_efe = mse(efe_t, (R_t + efe_next) * onehot_a_next)
+        total_loss = loss_efe + loss_model
+
+        self.obv_t = tf.identity(obv_next)
+
+        return total_loss, loss_model, loss_efe
 
 class StateModel(tf.Module):
     '''
@@ -114,29 +272,13 @@ class StateModel(tf.Module):
         super().__init__(name='StateModel')
         self.dim_z = args.z_size  # latent space size
         self.dim_obv = args.o_size  # observation size
-        self.a_size = args.a_width
+        self.a_size = args.a_width  # action size
+        self.n_samples = args.vae_n_samples
         self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
         self.kl_regularize_weight = args.vae_kl_regularize_weight
-        self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='transition')
-        self.posterior = Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, name='posterior')
-        # self.likelihood = Likelihood(self.dim_z, self.dim_obv)
-        self.likelihood = Encoder(self.dim_z, self.dim_obv, name='likelihood') # changed to output a distribution
-
-
-    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
-                                   tf.TensorSpec(shape=None, dtype=tf.float32)])
-    def mse(self, x_reconst, x_true):
-        ''' Mean Squared Error loss function'''
-        sse = tf.math.reduce_sum(tf.math.square(x_reconst - x_true), axis=-1)
-        return tf.math.reduce_mean(sse)
-
-    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
-                                  tf.TensorSpec(shape=None, dtype=tf.float32),
-                                  tf.TensorSpec(shape=None, dtype=tf.float32)])
-    def g_nll(self, mu, std, x_true):
-        ''' Gaussian Negative Log Likelihood loss function '''
-        nll = 0.5 * tf.math.log(2 * math.pi * tf.math.square(std)) + tf.math.square(x_true - mu) / (2 * tf.math.square(std))
-        return tf.reduce_mean(tf.reduce_sum(nll, axis=-1))
+        self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, n_samples=self.n_samples, name='transition')
+        self.posterior = Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, n_samples=self.n_samples, name='posterior')
+        self.likelihood = Encoder(self.dim_z, self.dim_obv, name='likelihood')
 
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
@@ -147,8 +289,6 @@ class StateModel(tf.Module):
         ''' forward function of the AIF state model used during training '''
         # add some noise to the observation
         o_cur_batch = o_cur + tf.random.normal(tf.shape(o_cur), stddev=0.05)
-        print("s_prev in stateModel: ", s_prev)
-        print("a_prev in stateModel: ", a_prev)
         _, mu_tran, std_tran = self.transition(tf.concat([s_prev, a_prev], axis=-1))
         state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur_batch], axis=-1))
         # o_reconst = self.likelihood(state_post)
@@ -156,7 +296,7 @@ class StateModel(tf.Module):
         
         # mask out empty samples in the batch when calculating the loss
         # MSE loss
-        # mse_loss = self.mse(o_reconst[mask], o_cur[mask])
+        # mse_loss = mse(o_reconst[mask], o_cur[mask])
         
         # tf.print("---------posterior mu--------")
         # tf.print(mu_post[mask])
@@ -168,7 +308,7 @@ class StateModel(tf.Module):
         # tf.print(std_tran[mask])
         
         # Guassian log-likelihood loss for reconstruction of observation
-        gnll = self.g_nll(mu_o[mask], std_o[mask], o_cur[mask])
+        gnll = g_nll(mu_o[mask], std_o[mask], o_cur[mask])
 
         # KL Divergence loss
         kld = kl_d(mu_post[mask], std_post[mask], mu_tran[mask], std_tran[mask])
