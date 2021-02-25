@@ -66,7 +66,7 @@ class InterceptionEnv(gym.Env):
         self.target_max_speed = 20.0
         self.target_fspeed_mean = 15.0
         self.target_fspeed_std = 5.0
-        self.intercept_threshold = 0.35
+        self.intercept_threshold = 0.35 * 2
 
         self.K = 0.017
         self.FPS = 30
@@ -131,18 +131,21 @@ class InterceptionEnv(gym.Env):
     def render(self, mode='human'):
         target_dis, target_speed, has_changed_speed, subject_dis, subject_speed = self.state
 
-        scale = (1 / (self.intercept_threshold / 2)) * 3
+        # scale = (1 / (self.intercept_threshold / 2)) * 4
+
+        screen_width = 1000
         
         if self.viewer is None:
             from gym.envs.classic_control import rendering
             import text_rendering
             
-            screen_width = int((-math.cos(max(self.approach_angle_list) * math.pi / 180) * self.subject_max_position + self.target_init_distance) * scale + 20)
-            screen_height = int((math.sin(min(self.approach_angle_list) * math.pi / 180) * self.subject_max_position) * scale + 100)
+            actual_width = int((-math.cos(max(self.approach_angle_list) * math.pi / 180) * self.subject_max_position + self.target_init_distance))
+            self.scale = screen_width / actual_width
+            screen_height = int((math.sin(min(self.approach_angle_list) * math.pi / 180) * self.subject_max_position) * self.scale + 100)
             self.viewer = rendering.Viewer(screen_width, screen_height)
 
             # Set the world origin to somewhere that makes sense, keeping everything on screen at all times
-            world_origin = rendering.Transform(translation=(self.target_init_distance * scale + 10, 90))
+            world_origin = rendering.Transform(translation=(self.target_init_distance * self.scale + 10, 90))
 
             # Set the background to black to make the subject and target stand out more
             background = rendering.make_polygon([(0, 0), (screen_width, 0), (screen_width, screen_height), (0, screen_height)])
@@ -150,7 +153,7 @@ class InterceptionEnv(gym.Env):
             self.viewer.add_geom(background)
 
             # Create the subject and target in red and green, and dashed lines as the projected path they travel on
-            subject = rendering.make_circle(self.intercept_threshold / 2 * scale)
+            subject = rendering.make_circle(self.intercept_threshold / 2 * self.scale)
             subject.set_color(0, 1, 0)
             self.subject_trans = rendering.Transform()
             subject.add_attr(self.subject_trans)
@@ -158,19 +161,19 @@ class InterceptionEnv(gym.Env):
             subject.add_attr(self.subject_rot)
             subject.add_attr(world_origin)
 
-            subject_path = rendering.Line(start=(-1000, 0), end=(1000, 0))
+            subject_path = rendering.Line(start=(-10000, 0), end=(10000, 0))
             subject_path.set_color(0.5, 0.5, 0.5)
             subject_path.add_attr(rendering.LineStyle(0xFF80))
             subject_path.add_attr(self.subject_rot)
             subject_path.add_attr(world_origin)
 
-            target = rendering.make_circle(self.intercept_threshold / 2 * scale)
+            target = rendering.make_circle(self.intercept_threshold / 2 * self.scale)
             target.set_color(1, 0, 0)
             self.target_trans = rendering.Transform()
             target.add_attr(self.target_trans)
             target.add_attr(world_origin)
 
-            target_path = rendering.Line(start=(-1000, 0), end=(1000, 0))
+            target_path = rendering.Line(start=(-10000, 0), end=(10000, 0))
             target_path.set_color(0.5, 0.5, 0.5)
             target_path.add_attr(rendering.LineStyle(0xFF80))
             target_path.add_attr(world_origin)
@@ -208,9 +211,9 @@ class InterceptionEnv(gym.Env):
             self.viewer.add_geom(self.subject_speed_label)
 
         # Update the state of the frame
-        self.subject_trans.set_translation(-subject_dis * scale, 0)
+        self.subject_trans.set_translation(-subject_dis * self.scale, 0)
         self.subject_rot.set_rotation(-self.approach_angle / 180 * math.pi)
-        self.target_trans.set_translation(-target_dis * scale, 0)
+        self.target_trans.set_translation(-target_dis * self.scale, 0)
         self.target_distance_label.set_text('Target Distance: ' + str(target_dis))
         self.target_speed_label.set_text('Target Speed: ' + str(target_speed))
         self.has_changed_speed_label.set_text('Has Changed Speed: ' + ('Yes' if has_changed_speed else 'No'))
@@ -235,7 +238,7 @@ if __name__ == "__main__":
 
     test.render()
     prev_time = time.time()
-    while not test.step(2)[2]:
+    while not test.step(1)[2]:
         time.sleep(max(frame_duration - (time.time() - prev_time), 0))
         prev_time = time.time()
         test.render()
