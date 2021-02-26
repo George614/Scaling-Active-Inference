@@ -167,7 +167,7 @@ if __name__ == "__main__":
 
     #%% fine-tune with human data
     fine_tune_epoch = 1000
-    path = "D:/Projects/TF2_ML/openai.gym.human3"
+    path = args.human_data_path
     d_human = np.load(path+'/all_human_data.npy', allow_pickle=True)
     d_human = d_human[1:]
     

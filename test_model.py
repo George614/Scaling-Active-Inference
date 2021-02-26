@@ -56,7 +56,7 @@ def frange_cycle_linear(n_iter, start=0.0, stop=1.0,  n_cycle=4, ratio=0.5):
 
 
 if __name__ == "__main__":
-    path = "D:/Projects/TF2_ML/openai.gym.human3"
+    path = args.human_data_path
     d_human = np.load(path+'/all_human_data.npy', allow_pickle=True)
     d_human = d_human[1] # take only 1 episode
     pad_length = None

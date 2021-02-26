@@ -21,7 +21,7 @@ if __name__ == '__main__':
     # # read in human data and load AI stateModel
     model_path_name = "results/{}/{}/vae_ai".format(args.exp_name, args.env_name)
     loadedModel = tf.saved_model.load(model_path_name)
-    human_data = np.load("D:\\Projects\\TF2_ML\\openai.gym.human3\\all_data.npy", allow_pickle=True)
+    human_data = np.load(args.human_data_path + "all_human_data.npy", allow_pickle=True)
     
     a_idx_right = human_data[:, :, 2] == 2
     human_data[a_idx_right, 2] = 1
