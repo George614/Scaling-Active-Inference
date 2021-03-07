@@ -1,7 +1,9 @@
 import logging
 import numpy as np
 from IPython.display import clear_output
+from collections import deque
 import matplotlib.pyplot as plt
+import random
 import math
 import gym
 import os
@@ -42,12 +44,37 @@ def plot(frame_idx, rewards, losses):
     plt.show()
 
 
+class ReplayBuffer(object):
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+    
+    def push(self, state, action, reward, next_state, done):
+        state      = np.expand_dims(state, 0)
+        next_state = np.expand_dims(next_state, 0)
+            
+        self.buffer.append((state, action, reward, next_state, done))
+    
+    def sample(self, batch_size):
+        state, action, reward, next_state, done = zip(*random.sample(self.buffer, batch_size))
+        state = np.asarray(np.concatenate(state), dtype=np.float32)
+        next_state = np.asarray(np.concatenate(next_state), dtype=np.float32)
+        action = np.asarray(action, dtype=np.int32)
+        reward = np.asarray(reward, dtype=np.float32)
+        done = np.asarray(done, dtype=bool)
+        return state, action, reward, next_state, done
+    
+    def __len__(self):
+        return len(self.buffer)
+
+
 if __name__ == '__main__':
     epsilon_start = 1.0
     epsilon_final = 0.01
     epsilon_decay = 500
     epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
     num_frames = 10000
+    buffer_size = 1000
+    batch_size = 32
 
     # use tensorboard for monitoring training if needed
     now = datetime.now()
@@ -59,6 +86,7 @@ if __name__ == '__main__':
     summary_writer.set_as_default()
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
+    replay_buffer = ReplayBuffer(buffer_size)
 
     # load the prior preference model
     prior_model_save_path = "results/prior_model/{}/".format(args.env_name)
@@ -69,8 +97,9 @@ if __name__ == '__main__':
     losses = []
     all_rewards = []
     episode_reward = 0
+    crash = False
     
-    env = gym.make('MountainCar-v0')
+    env = gym.make(args.env_name)
     observation = env.reset()
 
     for frame_idx in range(1, num_frames + 1):
@@ -79,24 +108,99 @@ if __name__ == '__main__':
         
         obv = tf.convert_to_tensor(observation, dtype=tf.float32)
         obv = tf.expand_dims(obv, axis=0)
-        if pplModel.obv_t is not None:
-            total_loss, loss_model, loss_efe = train_step(pplModel, opt, obv)
-            action = tf.argmax(pplModel.a_t, axis=-1).numpy().squeeze()
+        
+        action = pplModel.act(obv)
+        action = action.numpy().squeeze()
 
-            observation, reward, done, info = env.step(action)
-            episode_reward += reward
-            losses.append(total_loss.numpy())
-        else:
-            pplModel(obv)
+        next_obv, reward, done, _ = env.step(action)
+        replay_buffer.push(observation, action, reward, next_obv, done)
+        
+        observation = next_obv
+        episode_reward += reward
 
-        if frame_idx > 1 and done:
+        if done:
             observation = env.reset()
-            pplModel.obv_t = None
             all_rewards.append(episode_reward)
             episode_reward = 0
-            done = False
 
-        if frame_idx % 200 == 0:
-            plot(frame_idx, all_rewards, losses)
+        if len(replay_buffer) > batch_size:
+            batch_obv, batch_action, batch_reward, batch_next_obv, batch_done = replay_buffer.sample(batch_size)
+            with tf.GradientTape(persistent=True) as tape:
+                loss_model, loss_efe, R_ti, R_te, efe_old, efe_new, efe_t, efe_next, a_idx, a_next_idx = pplModel(batch_obv, batch_next_obv, batch_action, batch_done)
             
+            if tf.math.is_nan(loss_model):
+                print("loss nan at frame #", frame_idx)
+                break
+            
+            grads_model = tape.gradient(loss_model, pplModel.trainable_variables)
+            grads_efe = tape.gradient(loss_efe, pplModel.trainable_variables)
+
+            grads_model_clipped = []
+            for grad in grads_model:
+                if grad is not None:
+                    grad = tf.clip_by_norm(grad, clip_norm=1.0)
+                    if tf.math.reduce_any(tf.math.is_nan(grad)):
+                        print("grad_model nan at frame # ", frame_idx)
+                        crash = True
+                grads_model_clipped.append(grad)
+            
+            grads_efe_clipped = []
+            for grad in grads_efe:
+                if grad is not None:
+                    grad = tf.clip_by_norm(grad, clip_norm=1.0)
+                    if tf.math.reduce_any(tf.math.is_nan(grad)):
+                        print("grad_efe nan at frame # ", frame_idx)
+                        crash = True
+                grads_efe_clipped.append(grad)
+
+            if crash:
+                break
+
+            opt.apply_gradients(
+                (grad, var) 
+                for (grad, var) in zip(grads_model_clipped, pplModel.trainable_variables) 
+                if grad is not None
+                )
+            opt.apply_gradients(
+                (grad, var) 
+                for (grad, var) in zip(grads_efe_clipped, pplModel.trainable_variables) 
+                if grad is not None
+                )
+            
+            # losses.append(loss_model.numpy())
+            weights_maxes = [tf.math.reduce_max(var) for var in pplModel.trainable_variables]
+            weights_mins = [tf.math.reduce_min(var) for var in pplModel.trainable_variables]
+            weights_max = tf.math.reduce_max(weights_maxes)
+            weights_min = tf.math.reduce_min(weights_mins)
+
+            # grads_model_maxes = [tf.math.reduce_max(grad) for grad in grads_model if grad is not None]
+            # grads_model_mins = [tf.math.reduce_min(grad) for grad in grads_model if grad is not None]
+            # grads_max = tf.math.reduce_max(grads_model_maxes)
+            # grads_min = tf.math.reduce_min(grads_model_mins)
+
+            grads_efe_maxes = [tf.math.reduce_max(grad) for grad in grads_efe if grad is not None]
+            grads_efe_mins = [tf.math.reduce_min(grad) for grad in grads_efe if grad is not None]
+            grads_max = tf.math.reduce_max(grads_efe_maxes)
+            grads_min = tf.math.reduce_min(grads_efe_mins)
+            
+            tf.summary.scalar('loss_model', loss_model.numpy(), step=frame_idx)
+            tf.summary.scalar('loss_efe', loss_efe.numpy(), step=frame_idx)
+            tf.summary.scalar('weights_max', weights_max.numpy(), step=frame_idx)
+            tf.summary.scalar('weights_min', weights_min.numpy(), step=frame_idx)
+            tf.summary.scalar('grads_max', grads_max.numpy(), step=frame_idx)
+            tf.summary.scalar('grads_min', grads_min.numpy(), step=frame_idx)
+            tf.summary.scalar('R_ti_max', tf.math.reduce_max(R_ti), step=frame_idx)
+            tf.summary.scalar('R_ti_min', tf.math.reduce_min(R_ti), step=frame_idx)
+            tf.summary.scalar('R_te_max', tf.math.reduce_max(R_te), step=frame_idx)
+            tf.summary.scalar('R_te_min', tf.math.reduce_min(R_te), step=frame_idx)
+            tf.summary.scalar('EFE_old_max', tf.math.reduce_max(efe_old), step=frame_idx)
+            tf.summary.scalar('EFE_old_min', tf.math.reduce_min(efe_old), step=frame_idx)
+            tf.summary.scalar('EFE_new_max', tf.math.reduce_max(efe_new), step=frame_idx)
+            tf.summary.scalar('EFE_new_min', tf.math.reduce_min(efe_new), step=frame_idx)
+
+        if frame_idx % 200 == 0 and len(all_rewards) > 0:
+            # plot(frame_idx, all_rewards, losses)
+            print("frame {}, loss_model {}, loss_efe {}, episode_reward {}".format(frame_idx, loss_model.numpy(), loss_efe.numpy(), all_rewards[-1]))
+            tf.summary.scalar('last_episode_rewards', all_rewards[-1], step=frame_idx)
+
     env.close()
