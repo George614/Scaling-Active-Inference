@@ -7,19 +7,70 @@ from VAE_models import Dense
 
 EPSILON = 1e-5
 
-@tf.function
-def kl_d(mu_p, std_p, mu_q, std_q, keep_batch=False):
-    ''' KL-Divergence function for 2 diagonal Gaussian distributions '''
-    # reference: https://mr-easy.github.io/2020-04-16-kl-divergence-between-2-gaussian-distributions/
-    k = tf.cast(tf.shape(mu_p)[-1], tf.float32)
-    log_var = tf.math.log(tf.reduce_prod(tf.math.square(std_q), axis=-1)/tf.reduce_prod(tf.math.square(std_p), axis=-1) + EPSILON)
-    mu_var_multip = tf.math.reduce_sum((mu_p-mu_q) / (tf.math.square(std_q) + EPSILON) * (mu_p-mu_q), axis=-1)
-    trace = tf.math.reduce_sum(tf.math.square(std_p) / (tf.math.square(std_q) + EPSILON), axis=-1)
-    kld = 0.5 * (log_var - k + mu_var_multip + trace)
-    if not keep_batch:
-        kld = tf.math.reduce_mean(kld)
-    return kld
+@tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
+                               tf.TensorSpec(shape=None, dtype=tf.float32)])
+def squared_error_vec(x_reconst, x_true):
+    """ Squared error dimension-wise """
+    ############################################################################
+    # Alex-style -- avoid complex operators like pow(.) whenever you can, below
+    #               is the same as above
+    ############################################################################
+    diff = x_reconst - x_true
+    se = diff * diff # squared error
+    ############################################################################
+    return se
 
+@tf.function
+def kl_d(mu_p, sigSqr_p, log_sigSqr_p, mu_q, sigSqr_q, log_sigSqr_q, keep_batch=False):
+    """
+         Kullback-Leibler (KL) Divergence function for 2 multivariate Gaussian distributions
+         with strict diagonal covariances.
+
+         Follows formula, where p(x) = N(x ; mu_p,sig^2_p) and q(x) = N(x ; mu_q,sig^2_q):
+         KL(p||q) = log(sig_q/sig_p) + (sig^2_p + (mu_p - mu_q)^2)/(2 * sig^2_q) - 1/2
+                  = [ log(sig_q) - log(sig_p) ] + (sig^2_p + (mu_p - mu_q)^2)/(2 * sig^2_q) - 1/2
+    """
+    ############################################################################
+    # Alex-style - avoid logarithms whenever you can pre-compute them
+    # I like the variance-form of G-KL, I find it generally to be more stable
+    # Note that I expanded the formula a bit further using log difference rule
+    ############################################################################
+    eps = 1e-5
+    term1 = log_sigSqr_q - log_sigSqr_p
+    diff = mu_p - mu_q
+    term2 = (sigSqr_p + (diff * diff))/(sigSqr_q * 2 + eps)
+    KLD = term1 + term2 - 1/2
+    KLD = tf.reduce_sum(KLD, axis=-1) #gets KL per sample in batch (a column vector)
+    ############################################################################
+    if not keep_batch:
+        KLD = tf.math.reduce_mean(KLD)
+    return KLD
+
+@tf.function
+def g_nll(mu, sigSqr, log_sigSqr, x_true, keep_batch=False):
+    """ Gaussian Negative Log Likelihood loss function
+        --> assumes N(x; mu, sig^2)
+
+        mu <- external mean
+        sigSqr <- external variance
+        keep_batch <-
+        log_sigSqr <- optional pre-computed log(sig^2) (numerically stable form)
+    """
+    ############################################################################
+    # Alex-style - avoid logarithms whenever you can pre-compute them
+    # I like the variance-form of GNLL, I find it generally to be more stable
+    eps = 1e-5
+    diff = x_true - mu # pre-compute this quantity
+    term1 = -( (diff * diff)/(sigSqr *2 + eps) ) * 0.5 # central term
+    term2 = log_sigSqr  * 0.5 # numerically more stable form
+    #term2 = tf.math.log(sigSqr) * 0.5
+    term3 = -tf.math.log(np.pi * 2) * 0.5 # constant term
+    nll = term1 + term2 + term3
+    nll = tf.reduce_sum(nll, axis=-1) # gets GNLL per sample in batch (a column vector)
+    ############################################################################
+    if not keep_batch:
+        nll = tf.reduce_mean(nll)
+    return nll
 
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                tf.TensorSpec(shape=None, dtype=tf.float32)])
@@ -33,19 +84,30 @@ def mse_with_sum(x_reconst, x_true):
                                tf.TensorSpec(shape=None, dtype=tf.float32)])
 def mse(x_reconst, x_true):
     ''' Mean Squared Error '''
-    se = tf.math.square(x_reconst - x_true)
-    return tf.math.reduce_mean(se)
-
+    #se = tf.math.square(x_reconst - x_true)
+    return tf.math.reduce_mean(squared_error_vec(x_reconst,x_true))
 
 @tf.function
-def g_nll(mu, std, x_true, keep_batch=False):
+def kl_d_old(mu_p, std_p, mu_q, std_q, keep_batch=False):
+    ''' KL-Divergence function for 2 diagonal Gaussian distributions '''
+    # reference: https://mr-easy.github.io/2020-04-16-kl-divergence-between-2-gaussian-distributions/
+    k = tf.cast(tf.shape(mu_p)[-1], tf.float32)
+    log_var = tf.math.log(tf.reduce_prod(tf.math.square(std_q), axis=-1)/tf.reduce_prod(tf.math.square(std_p), axis=-1) + EPSILON)
+    mu_var_multip = tf.math.reduce_sum((mu_p-mu_q) / (tf.math.square(std_q) + EPSILON) * (mu_p-mu_q), axis=-1)
+    trace = tf.math.reduce_sum(tf.math.square(std_p) / (tf.math.square(std_q) + EPSILON), axis=-1)
+    kld = 0.5 * (log_var - k + mu_var_multip + trace)
+    if not keep_batch:
+        kld = tf.math.reduce_mean(kld)
+    return kld
+
+@tf.function
+def g_nll_old(mu, std, x_true, keep_batch=False):
     ''' Gaussian Negative Log Likelihood loss function '''
     nll = 0.5 * tf.math.log(2 * math.pi * tf.math.square(std)) + tf.math.square(x_true - mu) / (2 * tf.math.square(std) + EPSILON)
     nll = tf.reduce_sum(nll, axis=-1)
     if not keep_batch:
         nll = tf.reduce_mean(nll)
     return nll
-
 
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
@@ -92,7 +154,7 @@ class Encoder(tf.Module):
             self.activation = swish
         else:
             raise ValueError('incorrect activation type')
-    
+
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
         z = self.dense_input(X)
@@ -155,7 +217,7 @@ class FlexibleEncoder(tf.Module):
             self.activation = swish
         else:
             raise ValueError('incorrect activation type')
-    
+
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, x):
         for layer in self.layers[:-2]:
@@ -192,7 +254,7 @@ class FlexibleMLP(tf.Module):
             self.activation = swish
         else:
             raise ValueError('incorrect activation type')
-    
+
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, x):
         for layer in self.layers[:-1]:
@@ -265,22 +327,22 @@ class PPLModel(tf.Module):
 
             # difference between preferred future and actual future, i.e. instrumental term
             R_ti = -1.0 * g_nll(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
-            
+
             # negative almost KL-D between state distribution from transition model and from
             # approximate posterior model (encoder), i.e. epistemic value. Assumption is made.
             R_te = -1.0 * kl_d(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
-            
+
             # the nagative EFE value, i.e. the reward. Note the sign here
             R_t = R_ti + R_te
 
             # model reconstruction loss
             loss_model = g_nll(o_next_mu, o_next_std, obv_next)
-            
+
             # take the old EFE values given action indices
             idx_0 = tf.range(batch_size)
             a_idx = tf.stack([idx_0, action], axis=-1)
             efe_old = tf.gather_nd(efe_t, a_idx)
-            
+
             with tape.stop_recording():
                 # EFE values for next state, s_t+1 is from transition model instead of encoder
                 efe_target = self.EFEnet_target(states_next_tran)
@@ -333,11 +395,11 @@ class StateModel(tf.Module):
         state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur_batch], axis=-1))
         # o_reconst = self.likelihood(state_post)
         o_reconst, mu_o, std_o = self.likelihood(state_post)
-        
+
         # mask out empty samples in the batch when calculating the loss
         # MSE loss
         # mse_loss = mse_with_sum(o_reconst[mask], o_cur[mask])
-        
+
         # tf.print("---------posterior mu--------")
         # tf.print(mu_post[mask])
         # tf.print("---------transition mu--------")
@@ -346,7 +408,7 @@ class StateModel(tf.Module):
         # tf.print(std_post[mask])
         # tf.print("--------transition std--------")
         # tf.print(std_tran[mask])
-        
+
         # Guassian log-likelihood loss for reconstruction of observation
         gnll = g_nll(mu_o[mask], std_o[mask], o_cur[mask])
 
@@ -357,9 +419,9 @@ class StateModel(tf.Module):
         kld_regularize = kl_d(mu_post[mask], std_post[mask], standard_mean, standard_std)
 
         total_loss = self.kl_weight * kld + self.kl_regularize_weight * kld_regularize + gnll
-        
+
         return total_loss, gnll, kld, state_post
-    
+
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                   tf.TensorSpec(shape=None, dtype=tf.float32),
@@ -371,7 +433,7 @@ class StateModel(tf.Module):
         o_reconst_tran, mu_o_tran, std_o_tran = self.likelihood(state_tran)
         state_post, mu_post, std_post = self.posterior(tf.concat([s_prev, a_prev, o_cur], axis=-1))
         o_reconst_post, mu_o_post, std_o_post = self.likelihood(state_post)
-        
+
         return state_tran, state_post, mu_o_tran, mu_o_post
 
 
@@ -430,7 +492,7 @@ class Planner(tf.Module):
                 efe_stage_weighted = tf.concat(efe_stage_weighted, axis=0)
                 segments = tf.repeat(tf.range(self.n_actions ** d), self.n_actions)
                 reduced_efe = tf.math.segment_sum(efe_stage_weighted, segments)
-        
+
         return efe_stage
 
 
@@ -450,9 +512,9 @@ class Planner(tf.Module):
             repeated_H = tf.repeat(stage_H, repeats=self.n_actions**(self.D-d))
             horizon_kld = horizon_kld + repeated_kld
             horizon_H = horizon_H + repeated_H
-        
+
         horizon_efe = horizon_kld + 1/self.rho * horizon_H
-        
+
         return horizon_efe, horizon_kld, horizon_H
 
 
@@ -467,7 +529,7 @@ class Planner(tf.Module):
         horizon_efe, horizon_kld, horizon_H = self.evaluate_stage_efe(all_kld[:self.D], all_H[:self.D])
         # EFE values for policies after H steps, i.e. the effect of switching to a new policy
         extended_efe, extended_kld, extended_H = self.evaluate_stage_efe(all_kld[self.D:], all_H[self.D:])
-        
+
         efe_group = [extended_efe[i:i+self.n_pi] for i in range(0, self.n_actions ** (2*self.D), self.n_pi)]
         prob_pi_group = [tf.nn.softmax(-self.gamma * efe_branch) for efe_branch in efe_group]
         efe_extended_weighted = [prob_pi * efe_extended for prob_pi, efe_extended in zip(prob_pi_group, efe_group)]
@@ -485,7 +547,7 @@ class Planner(tf.Module):
             # self.true_state =  self.stateModel.posterior.mu + self.stateModel.posterior.std * tf.random.normal(tf.shape(self.stateModel.posterior.mu))
             # self.true_state = tf.math.reduce_mean(self.true_state, axis=0, keepdims=True)
             self.true_state = tf.zeros((1, self.dim_z))
-        
+
         # take current observation, previous action and previous true state to calculate
         # current true state using the posterior model
         a_prev = np.zeros((1, self.n_actions), dtype=np.float32)
@@ -515,11 +577,11 @@ class Planner(tf.Module):
             else:
                 multiples = tf.constant([self.n_actions, 1, 1], dtype=tf.int32)
                 self.stage_states = tf.Variable(tf.tile(self.stage_states, multiples))
-            
+
             # KL-D and entropy values for each policy at each time step within K steps
             step_kld = np.zeros((self.n_actions ** (d+1), self.K), dtype=np.float32)
             step_H = np.zeros((self.n_actions ** (d+1), self.K), dtype=np.float32)
-            
+
             # rollout for each branch, only for finite discretized actions
             for idx_b in range(self.n_actions ** (d+1)):
                 action = idx_b % self.n_actions
@@ -549,33 +611,33 @@ class Planner(tf.Module):
                     n = tf.shape(obv_std)[-1]
                     H = float(n/2) + float(n/2) * tf.math.log(2*math.pi * tf.math.pow(tf.math.reduce_prod(tf.math.square(obv_std), axis=-1), float(1/n)))
                     step_H[idx_b, t] = tf.reduce_mean(H)
-                
+
                 # update self.stage_states, which must be a tf.Variable since tensors are immutable
                 self.stage_states[idx_b, :, :].assign(rolling_states[:, :])
-                
+
             # gather KL-D value and entropy for each branch
             all_kld.append(np.sum(step_kld, axis=1))
             all_H.append(np.sum(step_H, axis=1))
-        
+
         # calculate EFE values for the root policies
         # efe_root = self.evaluate_stage_efe_recursive(all_kld, all_H)
         if self.include_extened_efe:
             efe_root = self.evaluate_2_term_efe(all_kld, all_H)
         else:
             efe_root, _, _ = self.evaluate_stage_efe(all_kld, all_H)
-        
+
         # sample a policy given probabilities of each policy
         # prob_pi = tf.math.softmax(-self.gamma * efe_root)
         # self.action =  np.random.choice([0, 1], p=prob_pi.numpy())
-        
+
         # use the policy with the lowest efe value
         self.action = tf.argmin(efe_root)
         self.action = tf.cast(tf.reshape(self.action, [-1]), dtype=tf.float32)
-        
+
         if self.action < 4:
             self.action = 0
         else:
             self.action = 1
-        
+
         print("self.action: ", self.action)
         return self.action
