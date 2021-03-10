@@ -5,18 +5,19 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 from VAE_models import Dense
 
-EPSILON = 1e-3
+EPSILON = 1e-5
 
 @tf.function
 def kl_d(mu_p, std_p, mu_q, std_q, keep_batch=False):
     ''' KL-Divergence function for 2 diagonal Gaussian distributions '''
+    # reference: https://mr-easy.github.io/2020-04-16-kl-divergence-between-2-gaussian-distributions/
     k = tf.cast(tf.shape(mu_p)[-1], tf.float32)
     log_var = tf.math.log(tf.reduce_prod(tf.math.square(std_q), axis=-1)/tf.reduce_prod(tf.math.square(std_p), axis=-1) + EPSILON)
     mu_var_multip = tf.math.reduce_sum((mu_p-mu_q) / (tf.math.square(std_q) + EPSILON) * (mu_p-mu_q), axis=-1)
     trace = tf.math.reduce_sum(tf.math.square(std_p) / (tf.math.square(std_q) + EPSILON), axis=-1)
     kld = 0.5 * (log_var - k + mu_var_multip + trace)
     if not keep_batch:
-    	kld = tf.math.reduce_mean(kld)
+        kld = tf.math.reduce_mean(kld)
     return kld
 
 
@@ -42,7 +43,7 @@ def g_nll(mu, std, x_true, keep_batch=False):
     nll = 0.5 * tf.math.log(2 * math.pi * tf.math.square(std)) + tf.math.square(x_true - mu) / (2 * tf.math.square(std) + EPSILON)
     nll = tf.reduce_sum(nll, axis=-1)
     if not keep_batch:
-    	nll = tf.reduce_mean(nll)
+        nll = tf.reduce_mean(nll)
     return nll
 
 
@@ -73,7 +74,7 @@ def sample_k_times(k, mu, std):
 
 class Encoder(tf.Module):
     ''' transition / posterior model of the active inference framework '''
-    def __init__(self, dim_input, dim_z, n_samples=1, name='Encoder', activation='leaky_relu'):
+    def __init__(self, dim_input, dim_z, n_samples=1, name='Encoder', activation='relu6'):
         super().__init__(name=name)
         self.dim_z = dim_z  # latent dimension
         self.N = n_samples
@@ -85,8 +86,8 @@ class Encoder(tf.Module):
         self.std = None
         if activation == 'tanh':
             self.activation = tf.nn.tanh
-        elif activation == 'leaky_relu':
-            self.activation = tf.nn.leaky_relu
+        elif activation == 'relu6':
+            self.activation = tf.nn.relu6
         elif activation == 'swish':
             self.activation = swish
         else:
@@ -135,7 +136,7 @@ class Encoder(tf.Module):
 class FlexibleEncoder(tf.Module):
     ''' Generic Gaussian encoder model based on Dense layer. Output mean and std as well
     as samples from the learned distribution '''
-    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='leaky_relu'):
+    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu6'):
         super().__init__(name=name)
         self.dim_z = layer_dims[-1]
         self.N = n_samples
@@ -148,8 +149,8 @@ class FlexibleEncoder(tf.Module):
         self.std = None
         if activation == 'tanh':
             self.activation = tf.nn.tanh
-        elif activation == 'leaky_relu':
-            self.activation = tf.nn.leaky_relu
+        elif activation == 'relu6':
+            self.activation = tf.nn.relu6
         elif activation == 'swish':
             self.activation = swish
         else:
@@ -178,15 +179,15 @@ class FlexibleEncoder(tf.Module):
 
 class FlexibleMLP(tf.Module):
     ''' Simple multi-layer perceptron model taking layer parameters as input '''
-    def __init__(self, layer_dims, name='MLP', activation='leaky_relu'):
+    def __init__(self, layer_dims, name='MLP', activation='relu6', trainable=True): # relu6, or tanh
         super().__init__(name=name)
         self.layers =[]
         for i in range(len(layer_dims)-1):
-            self.layers.append(Dense(layer_dims[i], layer_dims[i+1]))
+            self.layers.append(Dense(layer_dims[i], layer_dims[i+1], trainable=trainable))
         if activation == 'tanh':
             self.activation = tf.nn.tanh
-        elif activation == 'leaky_relu':
-            self.activation = tf.nn.leaky_relu
+        elif activation == 'relu6':
+            self.activation = tf.nn.relu6
         elif activation == 'swish':
             self.activation = swish
         else:
@@ -214,20 +215,23 @@ class PPLModel(tf.Module):
         self.a_size = args.a_width  # action size
         self.n_samples = args.vae_n_samples
         self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
-        # self.encoder = FlexibleEncoder((self.dim_obv, 64, 64, self.dim_z), name='Encoder')
-        # self.decoder = FlexibleEncoder((self.dim_z, 64, 64, self.dim_obv), name='Decoder')
-        # self.transition = FlexibleEncoder((self.dim_z + self.a_size, 64, 64, self.dim_z), name='Transition')
-        self.encoder = Encoder(self.dim_obv, self.dim_z, name='Encoder')
-        self.decoder = Encoder(self.dim_z, self.dim_obv, name='Decoder')
-        self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
+        self.encoder = FlexibleEncoder((self.dim_obv, 64, 64, self.dim_z), name='Encoder')
+        self.decoder = FlexibleEncoder((self.dim_z, 64, 64, self.dim_obv), name='Decoder')
+        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 64, 64, self.dim_z), name='Transition')
+        # self.encoder = Encoder(self.dim_obv, self.dim_z, name='Encoder')
+        # self.decoder = Encoder(self.dim_z, self.dim_obv, name='Decoder')
+        # self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
         self.EFEnet = FlexibleMLP((self.dim_z, 128, 64, self.a_size), name='EFEnet')
+        self.EFEnet_target = FlexibleMLP((self.dim_z, 128, 64, self.a_size), name='EFEnet_target', trainable=False)
+        self.update_target()
         self.priorModel = priorModel
         self.obv_t = None
         self.a_t = None
         self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
 
+
     def act(self, obv_t):
-    	# action selection using o_t and EFE network
+        # action selection using o_t and EFE network
         states, state_mu, state_std = self.encoder(obv_t)
         efe_t = self.EFEnet(states)
         if tf.random.uniform(shape=()) > self.epsilon:
@@ -238,48 +242,64 @@ class PPLModel(tf.Module):
         return action
 
 
-    def __call__(self, obv_t, obv_next, action, done):
+    def update_target(self):
+        for target_var, var in zip(self.EFEnet_target.variables, self.EFEnet.variables):
+            target_var.assign(var)
+
+
+    def train_step(self, obv_t, obv_next, action, done):
         batch_size = len(action)
         a_t = np.zeros((batch_size, self.a_size), dtype=np.float32)
         a_t[np.arange(batch_size), action] = 1  # shape of (batch x a_space_size) one-hot
-        # run s_t and a_t through the PPL model
-        states, state_mu, state_std = self.encoder(obv_t)
-        efe_t = self.EFEnet(states)  # in batch, output shape (batch x a_space_size)
-        states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, a_t], axis=-1))
-        o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
-        o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
-        states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
+        with tf.GradientTape(persistent=True) as tape:
+            # run s_t and a_t through the PPL model
+            states, state_mu, state_std = self.encoder(obv_t)
+            efe_t = self.EFEnet(states)  # in batch, output shape (batch x a_space_size)
+            states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, a_t], axis=-1))
+            o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
+            o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
+            states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
 
-        # difference between preferred future and predicted future
-        # R_ti = kl_d(o_prior_mu, o_prior_std, o_next_mu, o_next_std)
+            # difference between preferred future and predicted future
+            # R_ti = kl_d(o_prior_mu, o_prior_std, o_next_mu, o_next_std)
 
-        # difference between preferred future and actual future, i.e. instrumental term
-        R_ti = -1.0 * g_nll(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
-        # negative almost KL-D between state distribution from transition model and from
-        # approximate posterior model (encoder), i.e. epistemic value. Assumption is made.
-        R_te = -1.0 * kl_d(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
-        R_t = R_ti + R_te
+            # difference between preferred future and actual future, i.e. instrumental term
+            R_ti = -1.0 * g_nll(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
+            
+            # negative almost KL-D between state distribution from transition model and from
+            # approximate posterior model (encoder), i.e. epistemic value. Assumption is made.
+            R_te = -1.0 * kl_d(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
+            
+            # the nagative EFE value, i.e. the reward. Note the sign here
+            R_t = R_ti + R_te
 
-        # model reconstruction loss
-        loss_model = g_nll(o_next_mu, o_next_std, obv_next)
-        # EFE values for next state, s_t+1 is from transition model instead of encoder
-        efe_next = self.EFEnet(states_next_tran)
-        idx_a_next = tf.math.argmax(efe_next, axis=-1, output_type=tf.dtypes.int32)
-        onehot_a_next = np.zeros((batch_size, self.a_size), dtype=np.float32)
-        onehot_a_next[np.arange(batch_size), idx_a_next.numpy()] = 1
-        
-        # take the old and the new EFE values given action indices
-        idx_0 = tf.range(batch_size)
-        a_idx = tf.stack([idx_0, action], axis=-1)
-        efe_old = tf.gather_nd(efe_t, a_idx)
-        a_next_idx = tf.stack([idx_0, idx_a_next], axis=-1)
-        efe_new = tf.gather_nd(efe_next, a_next_idx)
-        
-        # TD loss
-        done = tf.convert_to_tensor(done, dtype=tf.float32)
-        loss_efe = mse(efe_old, (R_t + efe_new * (1 - done)))
+            # model reconstruction loss
+            loss_model = g_nll(o_next_mu, o_next_std, obv_next)
+            
+            # take the old EFE values given action indices
+            idx_0 = tf.range(batch_size)
+            a_idx = tf.stack([idx_0, action], axis=-1)
+            efe_old = tf.gather_nd(efe_t, a_idx)
+            
+            with tape.stop_recording():
+                # EFE values for next state, s_t+1 is from transition model instead of encoder
+                efe_target = self.EFEnet_target(states_next_tran)
+                idx_a_next = tf.math.argmax(efe_target, axis=-1, output_type=tf.dtypes.int32)
+                onehot_a_next = np.zeros((batch_size, self.a_size), dtype=np.float32)
+                onehot_a_next[np.arange(batch_size), idx_a_next.numpy()] = 1
+                # take the new EFE values
+                a_next_idx = tf.stack([idx_0, idx_a_next], axis=-1)
+                efe_new = tf.gather_nd(efe_target, a_next_idx)
 
-        return loss_model, loss_efe, R_ti, R_te, efe_old, efe_new, efe_t, efe_next, a_idx, a_next_idx
+            # TD loss
+            done = tf.convert_to_tensor(done, dtype=tf.float32)
+            loss_efe = mse(efe_old, (R_t + efe_new * (1 - done))) #TODO:chnage to huber loss
+
+            # calculate gradient w.r.t model reconstruction and TD respectively
+            grads_model = tape.gradient(loss_model, self.trainable_variables)
+            grads_efe = tape.gradient(loss_efe, self.trainable_variables)
+
+        return grads_efe, grads_model, loss_efe, loss_efe, R_ti, R_te, efe_t, efe_target
 
 
 class StateModel(tf.Module):

@@ -22,15 +22,6 @@ gpu_devices = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpu_devices:
     tf.config.experimental.set_memory_growth(gpu, True)
 
-# @tf.function
-def train_step(model, optimizer, o_cur):
-    with tf.GradientTape() as tape:
-        total_loss, loss_model, loss_efe = model(o_cur)
-
-    gradients = tape.gradient(total_loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return total_loss, loss_model, loss_efe
-
 
 def plot(frame_idx, rewards, losses):
     clear_output(True)
@@ -69,10 +60,11 @@ class ReplayBuffer(object):
 
 if __name__ == '__main__':
     epsilon_start = 1.0
-    epsilon_final = 0.01
+    epsilon_final = 0.05
     epsilon_decay = 500
     epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
     num_frames = 10000
+    target_update_freq = 100
     buffer_size = 1000
     batch_size = 32
 
@@ -84,8 +76,10 @@ if __name__ == '__main__':
     tensorboard_dir = os.path.join(model_save_path, 'tensorboard', now.strftime("%b-%d-%Y %H-%M-%S"))
     summary_writer = tf.summary.create_file_writer(tensorboard_dir)
     summary_writer.set_as_default()
+    #TODO: try RMSProp optimizer, change opt epsilon to 0.01
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
+    opt.__setattr__('epsilon', 1e-2)
     replay_buffer = ReplayBuffer(buffer_size)
 
     # load the prior preference model
@@ -125,16 +119,15 @@ if __name__ == '__main__':
 
         if len(replay_buffer) > batch_size:
             batch_obv, batch_action, batch_reward, batch_next_obv, batch_done = replay_buffer.sample(batch_size)
-            with tf.GradientTape(persistent=True) as tape:
-                loss_model, loss_efe, R_ti, R_te, efe_old, efe_new, efe_t, efe_next, a_idx, a_next_idx = pplModel(batch_obv, batch_next_obv, batch_action, batch_done)
+
+            grads_efe, grads_model, loss_model, loss_efe, R_ti, R_te, efe_t, efe_target = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done)
             
-            if tf.math.is_nan(loss_model):
-                print("loss nan at frame #", frame_idx)
+            if tf.math.is_nan(loss_efe):
+                print("loss_efe nan at frame #", frame_idx)
                 break
             
-            grads_model = tape.gradient(loss_model, pplModel.trainable_variables)
-            grads_efe = tape.gradient(loss_efe, pplModel.trainable_variables)
-
+            # clip gradients
+            crash = False
             grads_model_clipped = []
             for grad in grads_model:
                 if grad is not None:
@@ -150,6 +143,7 @@ if __name__ == '__main__':
                     grad = tf.clip_by_norm(grad, clip_norm=1.0)
                     if tf.math.reduce_any(tf.math.is_nan(grad)):
                         print("grad_efe nan at frame # ", frame_idx)
+                        #TODO print all weights,bias of EFE net
                         crash = True
                 grads_efe_clipped.append(grad)
 
@@ -193,10 +187,13 @@ if __name__ == '__main__':
             tf.summary.scalar('R_ti_min', tf.math.reduce_min(R_ti), step=frame_idx)
             tf.summary.scalar('R_te_max', tf.math.reduce_max(R_te), step=frame_idx)
             tf.summary.scalar('R_te_min', tf.math.reduce_min(R_te), step=frame_idx)
-            tf.summary.scalar('EFE_old_max', tf.math.reduce_max(efe_old), step=frame_idx)
-            tf.summary.scalar('EFE_old_min', tf.math.reduce_min(efe_old), step=frame_idx)
-            tf.summary.scalar('EFE_new_max', tf.math.reduce_max(efe_new), step=frame_idx)
-            tf.summary.scalar('EFE_new_min', tf.math.reduce_min(efe_new), step=frame_idx)
+            tf.summary.scalar('EFE_old_max', tf.math.reduce_max(efe_t), step=frame_idx)
+            tf.summary.scalar('EFE_old_min', tf.math.reduce_min(efe_t), step=frame_idx)
+            tf.summary.scalar('EFE_new_max', tf.math.reduce_max(efe_target), step=frame_idx)
+            tf.summary.scalar('EFE_new_min', tf.math.reduce_min(efe_target), step=frame_idx)
+
+        if frame_idx % target_update_freq == 0:
+            pplModel.update_target()
 
         if frame_idx % 200 == 0 and len(all_rewards) > 0:
             # plot(frame_idx, all_rewards, losses)

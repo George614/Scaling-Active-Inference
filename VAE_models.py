@@ -85,13 +85,13 @@ def sigmoid_cross_entropy_with_logits(x, y):
 
 class Dense(tf.Module):
     ''' fully-connected NN layer written in a TF2 way '''
-    def __init__(self, in_features, out_features, name=None):
+    def __init__(self, in_features, out_features, name=None, trainable=True):
         super().__init__(name=name)
         bound = 1 / math.sqrt(in_features)
         self.W = tf.random.uniform((in_features, out_features), -bound, bound)
-        self.W = tf.Variable(self.W, name='W')
+        self.W = tf.Variable(self.W, name='W', trainable=trainable)
         self.b = tf.zeros((out_features,))
-        self.b = tf.Variable(self.b, name='b')
+        self.b = tf.Variable(self.b, name='b', trainable=trainable)
     
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
