@@ -65,7 +65,7 @@ def g_nll(mu, sigSqr, log_sigSqr, x_true, keep_batch=False):
     term2 = log_sigSqr  * 0.5 # numerically more stable form
     #term2 = tf.math.log(sigSqr) * 0.5
     term3 = -tf.math.log(np.pi * 2) * 0.5 # constant term
-    nll = term1 + term2 + term3
+    nll = -( term1 + term2 + term3 ) # -( LL )
     nll = tf.reduce_sum(nll, axis=-1) # gets GNLL per sample in batch (a column vector)
     ############################################################################
     if not keep_batch:
