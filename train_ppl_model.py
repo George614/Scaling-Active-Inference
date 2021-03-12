@@ -63,10 +63,11 @@ if __name__ == '__main__':
     epsilon_final = 0.05
     epsilon_decay = 500
     epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
-    num_frames = 10000
-    target_update_freq = 100
-    buffer_size = 1000
+    num_frames = 100000
+    target_update_freq = 500
+    buffer_size = 2000
     batch_size = 32
+    grad_norm_clip = 1.0
 
     # use tensorboard for monitoring training if needed
     now = datetime.now()
@@ -119,8 +120,8 @@ if __name__ == '__main__':
 
         if len(replay_buffer) > batch_size:
             batch_obv, batch_action, batch_reward, batch_next_obv, batch_done = replay_buffer.sample(batch_size)
-
-            grads_efe, grads_model, loss_model, loss_efe, R_ti, R_te, efe_t, efe_target = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done)
+            batch_action = tf.one_hot(batch_action, depth=args.a_width)
+            grads_efe, grads_model, grads_l2, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done)
             
             if tf.math.is_nan(loss_efe):
                 print("loss_efe nan at frame #", frame_idx)
@@ -131,7 +132,7 @@ if __name__ == '__main__':
             grads_model_clipped = []
             for grad in grads_model:
                 if grad is not None:
-                    grad = tf.clip_by_norm(grad, clip_norm=1.0)
+                    grad = tf.clip_by_norm(grad, clip_norm=grad_norm_clip)
                     if tf.math.reduce_any(tf.math.is_nan(grad)):
                         print("grad_model nan at frame # ", frame_idx)
                         crash = True
@@ -140,12 +141,21 @@ if __name__ == '__main__':
             grads_efe_clipped = []
             for grad in grads_efe:
                 if grad is not None:
-                    grad = tf.clip_by_norm(grad, clip_norm=1.0)
+                    grad = tf.clip_by_norm(grad, clip_norm=grad_norm_clip)
                     if tf.math.reduce_any(tf.math.is_nan(grad)):
                         print("grad_efe nan at frame # ", frame_idx)
                         #TODO print all weights,bias of EFE net
                         crash = True
                 grads_efe_clipped.append(grad)
+
+            grads_l2_clipped = []
+            for grad in grads_l2:
+                if grad is not None:
+                    grad = tf.clip_by_norm(grad, clip_norm=grad_norm_clip)
+                    if tf.math.reduce_any(tf.math.is_nan(grad)):
+                        print("grad_l2 nan at frame # ", frame_idx)
+                        crash = True
+                grads_l2_clipped.append(grad)
 
             if crash:
                 break
@@ -160,7 +170,12 @@ if __name__ == '__main__':
                 for (grad, var) in zip(grads_efe_clipped, pplModel.trainable_variables) 
                 if grad is not None
                 )
-            
+            opt.apply_gradients(
+                (grad, var) 
+                for (grad, var) in zip(grads_l2_clipped, pplModel.trainable_variables) 
+                if grad is not None
+                )
+
             # losses.append(loss_model.numpy())
             weights_maxes = [tf.math.reduce_max(var) for var in pplModel.trainable_variables]
             weights_mins = [tf.math.reduce_min(var) for var in pplModel.trainable_variables]
@@ -179,6 +194,7 @@ if __name__ == '__main__':
             
             tf.summary.scalar('loss_model', loss_model.numpy(), step=frame_idx)
             tf.summary.scalar('loss_efe', loss_efe.numpy(), step=frame_idx)
+            tf.summary.scalar('loss_l2', loss_l2.numpy(), step=frame_idx)
             tf.summary.scalar('weights_max', weights_max.numpy(), step=frame_idx)
             tf.summary.scalar('weights_min', weights_min.numpy(), step=frame_idx)
             tf.summary.scalar('grads_max', grads_max.numpy(), step=frame_idx)

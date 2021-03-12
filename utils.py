@@ -27,6 +27,7 @@ PARSER.add('--vae_kl_weight', required=True, type=float, help='vae kl-d weight')
 PARSER.add('--vae_kl_regularize_weight', required=True, type=float, help='vae kl-d regularizer weight')
 PARSER.add('--vae_num_epoch', required=True, type=int, help='vae num epoch for training')
 PARSER.add('--vae_optimizer', type=str, help='Adam, RMSprop, SGD.', default='Adam')
+PARSER.add('--l2_reg', default=1e-3, type=float, help='L2 regularization factor')
 
 PARSER.add('--planner_lookahead', type=int, default=30, help='num of time steps to repeat an action')
 PARSER.add('--planner_plan_depth', type=int, default=3, help='depth in the planning horizon')

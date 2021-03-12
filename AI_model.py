@@ -134,6 +134,9 @@ def sample_k_times(k, mu, std):
     return z_sample
 
 
+huber = tf.keras.losses.Huber()
+
+
 class Encoder(tf.Module):
     ''' transition / posterior model of the active inference framework '''
     def __init__(self, dim_input, dim_z, n_samples=1, name='Encoder', activation='relu6'):
@@ -290,14 +293,15 @@ class PPLModel(tf.Module):
         self.obv_t = None
         self.a_t = None
         self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
+        self.l2_reg = args.l2_reg
 
-
+    @tf.function
     def act(self, obv_t):
         # action selection using o_t and EFE network
         states, state_mu, state_std = self.encoder(obv_t)
         efe_t = self.EFEnet(states)
         if tf.random.uniform(shape=()) > self.epsilon:
-            action = tf.argmax(efe_t, axis=-1)
+            action = tf.argmax(efe_t, axis=-1, output_type=tf.int32)
         else:
             action = tf.random.uniform(shape=(), maxval=self.a_size, dtype=tf.int32)
 
@@ -308,16 +312,13 @@ class PPLModel(tf.Module):
         for target_var, var in zip(self.EFEnet_target.variables, self.EFEnet.variables):
             target_var.assign(var)
 
-
-    def train_step(self, obv_t, obv_next, action, done):
-        batch_size = len(action)
-        a_t = np.zeros((batch_size, self.a_size), dtype=np.float32)
-        a_t[np.arange(batch_size), action] = 1  # shape of (batch x a_space_size) one-hot
+    @tf.function
+    def train_step(self, obv_t, obv_next, action, done):        
         with tf.GradientTape(persistent=True) as tape:
             # run s_t and a_t through the PPL model
             states, state_mu, state_std = self.encoder(obv_t)
             efe_t = self.EFEnet(states)  # in batch, output shape (batch x a_space_size)
-            states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, a_t], axis=-1))
+            states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, action], axis=-1))
             o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
             o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
             states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
@@ -326,42 +327,44 @@ class PPLModel(tf.Module):
             # R_ti = kl_d(o_prior_mu, o_prior_std, o_next_mu, o_next_std)
 
             # difference between preferred future and actual future, i.e. instrumental term
-            R_ti = -1.0 * g_nll(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
+            R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
 
             # negative almost KL-D between state distribution from transition model and from
             # approximate posterior model (encoder), i.e. epistemic value. Assumption is made.
-            R_te = -1.0 * kl_d(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
+            R_te = -1.0 * kl_d_old(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
 
             # the nagative EFE value, i.e. the reward. Note the sign here
             R_t = R_ti + R_te
 
             # model reconstruction loss
-            loss_model = g_nll(o_next_mu, o_next_std, obv_next)
+            loss_model = g_nll_old(o_next_mu, o_next_std, obv_next)
 
             # take the old EFE values given action indices
-            idx_0 = tf.range(batch_size)
-            a_idx = tf.stack([idx_0, action], axis=-1)
-            efe_old = tf.gather_nd(efe_t, a_idx)
+            efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
 
             with tape.stop_recording():
                 # EFE values for next state, s_t+1 is from transition model instead of encoder
                 efe_target = self.EFEnet_target(states_next_tran)
                 idx_a_next = tf.math.argmax(efe_target, axis=-1, output_type=tf.dtypes.int32)
-                onehot_a_next = np.zeros((batch_size, self.a_size), dtype=np.float32)
-                onehot_a_next[np.arange(batch_size), idx_a_next.numpy()] = 1
+                onehot_a_next = tf.one_hot(idx_a_next, depth=self.a_size)
                 # take the new EFE values
-                a_next_idx = tf.stack([idx_0, idx_a_next], axis=-1)
-                efe_new = tf.gather_nd(efe_target, a_next_idx)
+                efe_new = tf.math.reduce_sum(efe_target * onehot_a_next, axis=-1)
 
             # TD loss
-            done = tf.convert_to_tensor(done, dtype=tf.float32)
-            loss_efe = mse(efe_old, (R_t + efe_new * (1 - done))) #TODO:chnage to huber loss
+            done = tf.cast(done, dtype=tf.float32)
+            # use Huber loss instead of MSE loss
+            loss_efe = huber(efe_old, (R_t + efe_new * (1 - done)))
 
-            # calculate gradient w.r.t model reconstruction and TD respectively
-            grads_model = tape.gradient(loss_model, self.trainable_variables)
-            grads_efe = tape.gradient(loss_efe, self.trainable_variables)
+            # regularization for weights
+            loss_l2 = tf.add_n([tf.nn.l2_loss(var) for var in self.trainable_variables if 'W' in var.name])
+            loss_l2 *= self.l2_reg
 
-        return grads_efe, grads_model, loss_efe, loss_efe, R_ti, R_te, efe_t, efe_target
+        # calculate gradient w.r.t model reconstruction and TD respectively
+        grads_model = tape.gradient(loss_model, self.trainable_variables)
+        grads_efe = tape.gradient(loss_efe, self.trainable_variables)
+        grads_l2 = tape.gradient(loss_l2, self.trainable_variables)
+
+        return grads_efe, grads_model, grads_l2, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target
 
 
 class StateModel(tf.Module):
