@@ -217,3 +217,6 @@ if __name__ == '__main__':
             tf.summary.scalar('last_episode_rewards', all_rewards[-1], step=frame_idx)
 
     env.close()
+    # save the PPL model
+    tf.saved_model.save(pplModel, model_save_path)
+    print("> Trained the PPL model. Saved in:", model_save_path)

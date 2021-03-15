@@ -20,6 +20,7 @@ def squared_error_vec(x_reconst, x_true):
     ############################################################################
     return se
 
+
 @tf.function
 def kl_d(mu_p, sigSqr_p, log_sigSqr_p, mu_q, sigSqr_q, log_sigSqr_q, keep_batch=False):
     """
@@ -45,6 +46,7 @@ def kl_d(mu_p, sigSqr_p, log_sigSqr_p, mu_q, sigSqr_q, log_sigSqr_q, keep_batch=
     if not keep_batch:
         KLD = tf.math.reduce_mean(KLD)
     return KLD
+
 
 @tf.function
 def g_nll(mu, sigSqr, log_sigSqr, x_true, keep_batch=False):
@@ -72,6 +74,7 @@ def g_nll(mu, sigSqr, log_sigSqr, x_true, keep_batch=False):
         nll = tf.reduce_mean(nll)
     return nll
 
+
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
                                tf.TensorSpec(shape=None, dtype=tf.float32)])
 def mse_with_sum(x_reconst, x_true):
@@ -87,6 +90,7 @@ def mse(x_reconst, x_true):
     #se = tf.math.square(x_reconst - x_true)
     return tf.math.reduce_mean(squared_error_vec(x_reconst,x_true))
 
+
 @tf.function
 def kl_d_old(mu_p, std_p, mu_q, std_q, keep_batch=False):
     ''' KL-Divergence function for 2 diagonal Gaussian distributions '''
@@ -100,6 +104,7 @@ def kl_d_old(mu_p, std_p, mu_q, std_q, keep_batch=False):
         kld = tf.math.reduce_mean(kld)
     return kld
 
+
 @tf.function
 def g_nll_old(mu, std, x_true, keep_batch=False):
     ''' Gaussian Negative Log Likelihood loss function '''
@@ -108,6 +113,7 @@ def g_nll_old(mu, std, x_true, keep_batch=False):
     if not keep_batch:
         nll = tf.reduce_mean(nll)
     return nll
+
 
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
@@ -230,6 +236,9 @@ class FlexibleEncoder(tf.Module):
         raw_std = self.layers[-1](x)
         # softplus is supposed to avoid numerical overflow
         std = tf.clip_by_value(tf.math.softplus(raw_std), 0.01, 10.0)
+        # log_var = self.layers[-1](x)
+        # log_var = tf.clip_by_value(log_var, -9.0, 4.0)
+        # std = tf.math.exp(log_var * 0.5)
         if self.mu is None:
             batch_size = tf.shape(x)[0]
             self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
@@ -239,7 +248,7 @@ class FlexibleEncoder(tf.Module):
             self.std.assign(std)
         z_sample = sample(mu, std)
 
-        return z_sample, mu, std
+        return z_sample, mu, std #, log_var
 
 
 class FlexibleMLP(tf.Module):
@@ -280,14 +289,14 @@ class PPLModel(tf.Module):
         self.a_size = args.a_width  # action size
         self.n_samples = args.vae_n_samples
         self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
-        self.encoder = FlexibleEncoder((self.dim_obv, 64, 64, self.dim_z), name='Encoder')
-        self.decoder = FlexibleEncoder((self.dim_z, 64, 64, self.dim_obv), name='Decoder')
-        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 64, 64, self.dim_z), name='Transition')
+        self.encoder = FlexibleEncoder((self.dim_obv, 64, self.dim_z), name='Encoder')
+        self.decoder = FlexibleEncoder((self.dim_z, 64, self.dim_obv), name='Decoder')
+        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 32, 32, self.dim_z), name='Transition')
         # self.encoder = Encoder(self.dim_obv, self.dim_z, name='Encoder')
         # self.decoder = Encoder(self.dim_z, self.dim_obv, name='Decoder')
         # self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
-        self.EFEnet = FlexibleMLP((self.dim_z, 128, 64, self.a_size), name='EFEnet')
-        self.EFEnet_target = FlexibleMLP((self.dim_z, 128, 64, self.a_size), name='EFEnet_target', trainable=False)
+        self.EFEnet = FlexibleMLP((self.dim_z, 128, self.a_size), name='EFEnet')
+        self.EFEnet_target = FlexibleMLP((self.dim_z, 128, self.a_size), name='EFEnet_target', trainable=False)
         self.update_target()
         self.priorModel = priorModel
         self.obv_t = None
@@ -298,7 +307,7 @@ class PPLModel(tf.Module):
     @tf.function
     def act(self, obv_t):
         # action selection using o_t and EFE network
-        states, state_mu, state_std = self.encoder(obv_t)
+        states, _, _ = self.encoder(obv_t)
         efe_t = self.EFEnet(states)
         if tf.random.uniform(shape=()) > self.epsilon:
             action = tf.argmax(efe_t, axis=-1, output_type=tf.int32)
@@ -315,29 +324,51 @@ class PPLModel(tf.Module):
     @tf.function
     def train_step(self, obv_t, obv_next, action, done):        
         with tf.GradientTape(persistent=True) as tape:
-            # run s_t and a_t through the PPL model
+            ### run s_t and a_t through the PPL model ###
             states, state_mu, state_std = self.encoder(obv_t)
+            # states, state_mu, state_std, state_log_var = self.encoder(obv_t)
+
             efe_t = self.EFEnet(states)  # in batch, output shape (batch x a_space_size)
+            
             states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, action], axis=-1))
+            # states_next_tran, s_next_tran_mu, s_next_tran_std, s_next_tran_log_var = self.transition(tf.concat([states, action], axis=-1))
+
             o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
+            # o_next_hat, o_next_mu, o_next_std, o_next_log_var = self.decoder(states_next_tran)
+            
             o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
+
             states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
+            # states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_var = self.encoder(obv_next)
 
             # difference between preferred future and predicted future
             # R_ti = kl_d(o_prior_mu, o_prior_std, o_next_mu, o_next_std)
 
             # difference between preferred future and actual future, i.e. instrumental term
             R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
+            # R_ti = -1.0 * g_nll(o_prior_mu,
+            # 					o_prior_std * o_prior_std,
+            # 					2 * tf.math.log(o_prior_std),
+            # 					obv_next,
+            # 					keep_batch=True) #TODO re-train prior model
 
             # negative almost KL-D between state distribution from transition model and from
             # approximate posterior model (encoder), i.e. epistemic value. Assumption is made.
             R_te = -1.0 * kl_d_old(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
+            # R_te = -1.0 * kl_d(s_next_tran_mu,
+            # 					s_next_tran_std * s_next_tran_std,
+            # 					s_next_tran_log_var,
+            # 					s_next_enc_mu,
+            # 					s_next_enc_std * s_next_enc_std,
+            # 					s_next_enc_log_var,
+            # 					keep_batch=True)
 
             # the nagative EFE value, i.e. the reward. Note the sign here
             R_t = R_ti + R_te
 
             # model reconstruction loss
             loss_model = g_nll_old(o_next_mu, o_next_std, obv_next)
+            # loss_model = g_nll(o_next_mu, o_next_std * o_next_std, o_next_log_var, obv_next)
 
             # take the old EFE values given action indices
             efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
