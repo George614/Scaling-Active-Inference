@@ -22,7 +22,7 @@ def squared_error_vec(x_reconst, x_true):
 
 
 @tf.function
-def kl_d(mu_p, sigSqr_p, log_sigSqr_p, mu_q, sigSqr_q, log_sigSqr_q, keep_batch=False):
+def kl_d(mu_p, sigSqr_p, log_sig_p, mu_q, sigSqr_q, log_sig_q, keep_batch=False):
     """
          Kullback-Leibler (KL) Divergence function for 2 multivariate Gaussian distributions
          with strict diagonal covariances.
@@ -37,7 +37,7 @@ def kl_d(mu_p, sigSqr_p, log_sigSqr_p, mu_q, sigSqr_q, log_sigSqr_q, keep_batch=
     # Note that I expanded the formula a bit further using log difference rule
     ############################################################################
     eps = 1e-5
-    term1 = log_sigSqr_q - log_sigSqr_p
+    term1 = log_sig_q - log_sig_p
     diff = mu_p - mu_q
     term2 = (sigSqr_p + (diff * diff))/(sigSqr_q * 2 + eps)
     KLD = term1 + term2 - 1/2
@@ -63,9 +63,9 @@ def g_nll(mu, sigSqr, log_sigSqr, x_true, keep_batch=False):
     # I like the variance-form of GNLL, I find it generally to be more stable
     eps = 1e-5
     diff = x_true - mu # pre-compute this quantity
-    term1 = -( (diff * diff)/(sigSqr *2 + eps) ) * 0.5 # central term
-    term2 = log_sigSqr  * 0.5 # numerically more stable form
-    #term2 = tf.math.log(sigSqr) * 0.5
+    term1 = -( (diff * diff)/(sigSqr *2 + eps) ) # central term
+    term2 = -log_sigSqr  * 0.5 # numerically more stable form
+    #term2 = -tf.math.log(sigSqr) * 0.5
     term3 = -tf.math.log(np.pi * 2) * 0.5 # constant term
     nll = -( term1 + term2 + term3 ) # -( LL )
     nll = tf.reduce_sum(nll, axis=-1) # gets GNLL per sample in batch (a column vector)
@@ -322,20 +322,20 @@ class PPLModel(tf.Module):
             target_var.assign(var)
 
     @tf.function
-    def train_step(self, obv_t, obv_next, action, done):        
+    def train_step(self, obv_t, obv_next, action, done):
         with tf.GradientTape(persistent=True) as tape:
             ### run s_t and a_t through the PPL model ###
             states, state_mu, state_std = self.encoder(obv_t)
             # states, state_mu, state_std, state_log_var = self.encoder(obv_t)
 
             efe_t = self.EFEnet(states)  # in batch, output shape (batch x a_space_size)
-            
+
             states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, action], axis=-1))
             # states_next_tran, s_next_tran_mu, s_next_tran_std, s_next_tran_log_var = self.transition(tf.concat([states, action], axis=-1))
 
             o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
             # o_next_hat, o_next_mu, o_next_std, o_next_log_var = self.decoder(states_next_tran)
-            
+
             o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
 
             states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
