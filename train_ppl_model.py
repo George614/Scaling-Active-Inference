@@ -65,10 +65,10 @@ if __name__ == '__main__':
     epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
     num_frames = 100000
     target_update_freq = 500
-    buffer_size = 2000
+    buffer_size = 50000
     batch_size = 32
     grad_norm_clip = 1.0
-
+    
     # use tensorboard for monitoring training if needed
     now = datetime.now()
     model_save_path = "results/ppl_model/{}/".format(args.env_name)
@@ -80,8 +80,30 @@ if __name__ == '__main__':
     #TODO: try RMSProp optimizer, change opt epsilon to 0.01
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
-    opt.__setattr__('epsilon', 1e-2)
+    opt.__setattr__('epsilon', 1e-5)
     replay_buffer = ReplayBuffer(buffer_size)
+
+    # load and pre-process expert-batch data
+    print("Human expert batch data path: ", args.prior_data_path)
+    all_data = np.load(args.prior_data_path + "/all_human_data.npy", allow_pickle=True)
+    all_data = all_data[1:-1, :, :]  # exclude samples with imcomplete sequence
+
+    for i in range(len(all_data)):
+        for j in range(1, np.shape(all_data)[1]):
+            o_t = all_data[i, j-1, :2]
+            o_tp1 = all_data[i, j, :2]
+            reward = all_data[i, j, 3]
+            action = all_data[i, j, 2]
+            done = 0
+            if j == np.shape(all_data)[1]-1:
+                done = 1
+                replay_buffer.push(o_t, action, reward, o_tp1, done)
+                break
+            if np.equal(all_data[i, j+1, 0], 0):
+                done = 1
+                replay_buffer.push(o_t, action, reward, o_tp1, done)
+                break
+            replay_buffer.push(o_t, action, reward, o_tp1, done)
 
     # load the prior preference model
     prior_model_save_path = "results/prior_model/{}/".format(args.env_name)
@@ -207,6 +229,8 @@ if __name__ == '__main__':
             tf.summary.scalar('EFE_old_min', tf.math.reduce_min(efe_t), step=frame_idx)
             tf.summary.scalar('EFE_new_max', tf.math.reduce_max(efe_target), step=frame_idx)
             tf.summary.scalar('EFE_new_min', tf.math.reduce_min(efe_target), step=frame_idx)
+            if len(all_rewards) > 0:
+                tf.summary.scalar('last_episode_rewards', all_rewards[-1], step=frame_idx)
 
         if frame_idx % target_update_freq == 0:
             pplModel.update_target()
@@ -214,7 +238,6 @@ if __name__ == '__main__':
         if frame_idx % 200 == 0 and len(all_rewards) > 0:
             # plot(frame_idx, all_rewards, losses)
             print("frame {}, loss_model {}, loss_efe {}, episode_reward {}".format(frame_idx, loss_model.numpy(), loss_efe.numpy(), all_rewards[-1]))
-            tf.summary.scalar('last_episode_rewards', all_rewards[-1], step=frame_idx)
 
     env.close()
     # save the PPL model
