@@ -1,6 +1,5 @@
 import logging
 import numpy as np
-from IPython.display import clear_output
 from collections import deque
 import matplotlib.pyplot as plt
 import random
@@ -21,18 +20,6 @@ args = PARSER.parse_args()
 gpu_devices = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpu_devices:
     tf.config.experimental.set_memory_growth(gpu, True)
-
-
-def plot(frame_idx, rewards, losses):
-    clear_output(True)
-    plt.figure(figsize=(20,5))
-    plt.subplot(131)
-    plt.title('frame %s. reward: %s' % (frame_idx, np.mean(rewards[-10:])))
-    plt.plot(rewards)
-    plt.subplot(132)
-    plt.title('loss')
-    plt.plot(losses)
-    plt.show()
 
 
 class ReplayBuffer(object):
@@ -78,7 +65,7 @@ if __name__ == '__main__':
     tensorboard_dir = os.path.join(model_save_path, 'tensorboard', now.strftime("%b-%d-%Y %H-%M-%S"))
     summary_writer = tf.summary.create_file_writer(tensorboard_dir)
     summary_writer.set_as_default()
-    #TODO: try RMSProp optimizer, change opt epsilon to 0.01
+
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
     opt.__setattr__('epsilon', 1e-5)
@@ -183,7 +170,6 @@ if __name__ == '__main__':
                 grad = tf.clip_by_norm(grad, clip_norm=grad_norm_clip)
                 if tf.math.reduce_any(tf.math.is_nan(grad)):
                     print("grad_efe nan at frame # ", frame_idx)
-                    #TODO print all weights,bias of EFE net
                     crash = True
             grads_efe_clipped.append(grad)
 
@@ -254,7 +240,6 @@ if __name__ == '__main__':
             pplModel.update_target()
 
         if frame_idx % 200 == 0 and len(all_rewards) > 0:
-            # plot(frame_idx, all_rewards, losses)
             print("frame {}, loss_model {}, loss_efe {}, episode_reward {}".format(frame_idx, loss_model.numpy(), loss_efe.numpy(), all_rewards[-1]))
 
     env.close()
