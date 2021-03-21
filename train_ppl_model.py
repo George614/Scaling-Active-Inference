@@ -46,17 +46,22 @@ class ReplayBuffer(object):
 
 
 if __name__ == '__main__':
-    epsilon_start = 1.0
-    epsilon_final = 0.05
-    epsilon_decay = 500
-    epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
-    num_frames = 100000
+    num_frames = 200000
     target_update_freq = 500
     buffer_size = 50000
     batch_size = 32
     grad_norm_clip = 1.0
     log_interval = 4
-    
+    keep_expert_batch = True
+    epsilon_start = 1.0
+    epsilon_final = 0.02
+    epsilon_decay = num_frames / 20
+    epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
+    plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
+    plt.xlabel('steps')
+    plt.ylabel('epsilon')
+    plt.title("Exponential decay schedule")
+    plt.show()
     # use tensorboard for monitoring training if needed
     now = datetime.now()
     model_save_path = "results/ppl_model/{}/".format(args.env_name)
@@ -69,38 +74,54 @@ if __name__ == '__main__':
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
     opt.__setattr__('epsilon', 1e-5)
-    expert_buffer = ReplayBuffer(buffer_size)
+    expert_buffer = ReplayBuffer(100000)
     replay_buffer = ReplayBuffer(buffer_size)
 
-    # load and pre-process expert-batch data
-    print("Human expert batch data path: ", args.prior_data_path)
-    all_data = np.load(args.prior_data_path + "/all_human_data.npy", allow_pickle=True)
-    all_data = all_data[1:-1, :, :]  # exclude samples with imcomplete sequence
+    ### load and pre-process human expert-batch data ###
+    # print("Human expert batch data path: ", args.prior_data_path)
+    # all_data = np.load(args.prior_data_path + "/all_human_data.npy", allow_pickle=True)
+    # all_data = all_data[1:-1, :, :]  # exclude samples with imcomplete sequence
+
+    # for i in range(len(all_data)):
+    #     for j in range(1, np.shape(all_data)[1]):
+    #         o_t = all_data[i, j-1, :2]
+    #         o_tp1 = all_data[i, j, :2]
+    #         reward = all_data[i, j, 3]
+    #         action = all_data[i, j, 2]
+    #         done = 0
+    #         if j == np.shape(all_data)[1]-1:
+    #             done = 1
+    #             expert_buffer.push(o_t, action, reward, o_tp1, done)
+    #             break
+    #         if np.equal(all_data[i, j+1, 0], 0):
+    #             done = 1
+    #             expert_buffer.push(o_t, action, reward, o_tp1, done)
+    #             break
+    #         expert_buffer.push(o_t, action, reward, o_tp1, done)
+
+    ### load and pre-process rl-zoo expert-batch data ###
+    print("RL-zoo expert data path: ", args.zoo_data_path)
+    all_data = np.load(args.zoo_data_path + "/zoo-agent-mcar.npy", allow_pickle=True)
+    idx_done = np.where(all_data[:, 6] == 1)[0]
+    idx_done = idx_done - 1  # fix error on next_obv when done in original data
+    mask = np.not_equal(all_data[:, 6], 1)
+    for idx in idx_done:
+        all_data[idx, 6] = 1
+    all_data = all_data[mask]
 
     for i in range(len(all_data)):
-        for j in range(1, np.shape(all_data)[1]):
-            o_t = all_data[i, j-1, :2]
-            o_tp1 = all_data[i, j, :2]
-            reward = all_data[i, j, 3]
-            action = all_data[i, j, 2]
-            done = 0
-            if j == np.shape(all_data)[1]-1:
-                done = 1
-                expert_buffer.push(o_t, action, reward, o_tp1, done)
-                break
-            if np.equal(all_data[i, j+1, 0], 0):
-                done = 1
-                expert_buffer.push(o_t, action, reward, o_tp1, done)
-                break
-            expert_buffer.push(o_t, action, reward, o_tp1, done)
+        o_t, action, reward, o_tp1, done = all_data[i, :2], all_data[i, 2], all_data[i, 3], all_data[i, 4:6], all_data[i, 6]
+        expert_buffer.push(o_t, action, reward, o_tp1, done)
 
-    # load the prior preference model
+    if not keep_expert_batch:
+        replay_buffer = expert_buffer
+    ### load the prior preference model ###
     prior_model_save_path = "results/prior_model/{}/".format(args.env_name)
+    prior_model_save_path = os.path.join(prior_model_save_path, "zoo_data")
     priorModel = tf.saved_model.load(prior_model_save_path)
     # initial our model using parameters in the config file
     pplModel = PPLModel(priorModel, args=args)
 
-    losses = []
     all_rewards = []
     episode_reward = 0
     n_episodes = 0
@@ -131,18 +152,20 @@ if __name__ == '__main__':
             episode_reward = 0
             n_episodes += 1
 
-        total_samples = len(expert_buffer) + len(replay_buffer)
-        
-        if total_samples / len(replay_buffer) < batch_size:
-            # sample from both expert buffer and replay buffer
-            n_replay_samples = np.floor(batch_size * len(replay_buffer) / total_samples)
-            n_expert_samples = batch_size - n_replay_samples
-            expert_batch = expert_buffer.sample(int(n_expert_samples))
-            replay_batch = replay_buffer.sample(int(n_replay_samples))
-            batch_data = [np.concatenate((expert_sample, replay_sample)) for expert_sample, replay_sample in zip(expert_batch, replay_batch)]
+        if keep_expert_batch:
+            total_samples = len(expert_buffer) + len(replay_buffer)
+            if total_samples / len(replay_buffer) < batch_size:
+                # sample from both expert buffer and replay buffer
+                n_replay_samples = np.floor(batch_size * len(replay_buffer) / total_samples)
+                n_expert_samples = batch_size - n_replay_samples
+                expert_batch = expert_buffer.sample(int(n_expert_samples))
+                replay_batch = replay_buffer.sample(int(n_replay_samples))
+                batch_data = [np.concatenate((expert_sample, replay_sample)) for expert_sample, replay_sample in zip(expert_batch, replay_batch)]
+            else:
+                # sample from expert buffer only
+                batch_data = expert_buffer.sample(batch_size)
         else:
-            # sample from expert buffer only
-            batch_data = expert_buffer.sample(batch_size)
+            batch_data = replay_buffer.sample(batch_size)
 
         [batch_obv, batch_action, batch_reward, batch_next_obv, batch_done] = batch_data
         
@@ -201,7 +224,6 @@ if __name__ == '__main__':
             if grad is not None
             )
 
-        # losses.append(loss_model.numpy())
         weights_maxes = [tf.math.reduce_max(var) for var in pplModel.trainable_variables]
         weights_mins = [tf.math.reduce_min(var) for var in pplModel.trainable_variables]
         weights_max = tf.math.reduce_max(weights_maxes)
