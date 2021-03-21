@@ -36,31 +36,38 @@ def eval_step(model, o_cur, o_next):
     
 
 if __name__ == "__main__":
-    print("Prior model training data path: ", args.prior_data_path)
-    all_data = np.load(args.prior_data_path + "/all_human_data.npy", allow_pickle=True)
-    all_data = all_data[1:-1, 1:, :]  # exclude samples with imcomplete sequence
+    # print("Prior model training data path: ", args.prior_data_path)
+    # all_data = np.load(args.prior_data_path + "/all_human_data.npy", allow_pickle=True)
+    # all_data = all_data[1:-1, 1:, :]  # exclude samples with imcomplete sequence
 
-    obv_all = []
-    for i in range(len(all_data)):
-        o_episode = all_data[i, :, :2]
-        mask = np.not_equal(o_episode[:, 0], 0)
-        o_episode = o_episode[mask]
-        o_t = o_episode[:-1, :]
-        o_tp1 = o_episode[1:, :]
-        obv_all.append(np.hstack((o_t, o_tp1)))
+    # obv_all = []
+    # for i in range(len(all_data)):
+    #     o_episode = all_data[i, :, :2]
+    #     mask = np.not_equal(o_episode[:, 0], 0)
+    #     o_episode = o_episode[mask]
+    #     o_t = o_episode[:-1, :]
+    #     o_tp1 = o_episode[1:, :]
+    #     obv_all.append(np.hstack((o_t, o_tp1)))
     
-    obv_all = np.vstack(obv_all)
+    # obv_all = np.vstack(obv_all)
+
+    print("Prior model training data path: ", args.zoo_data_path)
+    all_data = np.load(args.zoo_data_path + "/zoo-agent-mcar.npy", allow_pickle=True)
+    obv_t, obv_tp1, done = all_data[:, :2], all_data[:, 4:6], all_data[:, 6]
+    obv_all = np.hstack((obv_t, obv_tp1))
+    obv_all = obv_all[np.not_equal(done, 1)]
     
     o_size = 2
     batch_size = 128
     n_epoch = 100
-    test_n_samples = 2056
+    test_n_samples = len(obv_all) // 10  # use 10% of data for testing
     all_dataset = tf.data.Dataset.from_tensor_slices(obv_all)
     test_dataset = all_dataset.take(test_n_samples)
     test_dataset = test_dataset.batch(test_n_samples)
     train_dataset = all_dataset.skip(test_n_samples)
     train_dataset = train_dataset.shuffle(buffer_size=args.buffer_size).batch(batch_size)
     model_save_path = "results/prior_model/{}/".format(args.env_name)
+    model_save_path = os.path.join(model_save_path, "zoo_data")
     if not os.path.exists(model_save_path):
         os.makedirs(model_save_path)
     

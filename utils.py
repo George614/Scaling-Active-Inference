@@ -18,6 +18,7 @@ PARSER.add('--o_size', required=True, type=int, help='observation size')
 PARSER.add('--z_size', required=True, type=int, help='hidden state size')
 PARSER.add('--data_path', required=True, type=str, help='path to the training data', default='./')
 PARSER.add('--prior_data_path', required=True, type=str, help='path to the human data for the PPL', default='./')
+PARSER.add('--zoo_data_path', required=True, type=str, help='path to the zoo agent data for the PPL', default='./')
 PARSER.add('--human_data_path', required=True, type=str, help='path to the human data for the state model', default='./')
 
 PARSER.add('--vae_batch_size', required=True, type=int, help='batch size for vae train')
