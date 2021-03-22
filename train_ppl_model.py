@@ -68,6 +68,7 @@ if __name__ == '__main__':
     if not os.path.exists(model_save_path):
         os.makedirs(model_save_path)
     tensorboard_dir = os.path.join(model_save_path, 'tensorboard', now.strftime("%b-%d-%Y %H-%M-%S"))
+    model_save_path = os.path.join(model_save_path, now.strftime("%b-%d-%Y_%H-%M-%S"))
     summary_writer = tf.summary.create_file_writer(tensorboard_dir)
     summary_writer.set_as_default()
 

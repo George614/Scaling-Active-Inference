@@ -352,16 +352,24 @@ class PPLModel(tf.Module):
             					obv_next,
             					keep_batch=True) #TODO re-train prior model
 
-            # negative almost KL-D between state distribution from transition model and from
-            # approximate posterior model (encoder), i.e. epistemic value. Assumption is made.
+            ### negative almost KL-D between state distribution from transition model and from
+            # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###
             # R_te = -1.0 * kl_d_old(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
-            R_te = -1.0 * kl_d(s_next_tran_mu,
-            					s_next_tran_std * s_next_tran_std,
-            					s_next_tran_log_sigma,
-            					s_next_enc_mu,
-            					s_next_enc_std * s_next_enc_std,
-            					s_next_enc_log_sigma,
-            					keep_batch=True)
+            # R_te = -1.0 * kl_d(s_next_tran_mu,
+            # 					s_next_tran_std * s_next_tran_std,
+            # 					s_next_tran_log_sigma,
+            # 					s_next_enc_mu,
+            # 					s_next_enc_std * s_next_enc_std,
+            # 					s_next_enc_log_sigma,
+            # 					keep_batch=True)
+            ### alternative epistemic term using sampled next state as X ###
+            R_te = g_nll(s_next_tran_mu,
+            			s_next_tran_std * s_next_tran_std,
+            			2 * s_next_tran_log_sigma,
+            			states_next_tran) - g_nll(s_next_enc_mu,
+            			s_next_enc_std * s_next_enc_std,
+            			2 * s_next_enc_log_sigma,
+            			states_next_tran)
 
             # the nagative EFE value, i.e. the reward. Note the sign here
             R_t = R_ti + R_te
