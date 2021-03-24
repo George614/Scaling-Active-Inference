@@ -8,7 +8,7 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 import tensorflow as tf
 from datetime import datetime
 from utils import PARSER
-from AI_model import Encoder, g_nll_old
+from AI_model import FlexibleEncoder, g_nll
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -19,19 +19,27 @@ for gpu in gpu_devices:
     
 @tf.function
 def train_step(model, optimizer, o_cur, o_next):
-    with tf.GradientTape() as tape:
-        z_sample, mu_o, std_o = model(o_cur)
-        gnll = g_nll_old(mu_o, std_o, o_next)
+    with tf.GradientTape(persistent=True) as tape:
+        z_sample, mu_o, std_o, log_sigma_o = model(o_cur)
+        # gnll = g_nll_old(mu_o, std_o, o_next)
+        gnll = g_nll(o_next, mu_o, std_o * std_o)
+        # regularization for weights
+        loss_l2 = tf.add_n([tf.nn.l2_loss(var) for var in model.trainable_variables if 'W' in var.name])
+        loss_l2 *= args.l2_reg
 
-    gradients = tape.gradient(gnll, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return gnll
+    grads_gnll = tape.gradient(gnll, model.trainable_variables)
+    grads_l2 = tape.gradient(loss_l2, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads_gnll, model.trainable_variables))
+    optimizer.apply_gradients(zip(grads_l2, model.trainable_variables))
+    return gnll, loss_l2
 
 
 @tf.function
 def eval_step(model, o_cur, o_next):
-    z_sample, mu_o, std_o = model(o_cur)
-    gnll = g_nll_old(mu_o, std_o, o_next)
+    # z_sample, mu_o, std_o = model(o_cur)
+    # gnll = g_nll_old(mu_o, std_o, o_next)
+    z_sample, mu_o, std_o, log_sigma_o = model(o_cur)
+    gnll = g_nll(o_next, mu_o, std_o * std_o, log_sigma_o)
     return gnll
     
 
@@ -57,9 +65,8 @@ if __name__ == "__main__":
     obv_all = np.hstack((obv_t, obv_tp1))
     obv_all = obv_all[np.not_equal(done, 1)]
     
-    o_size = 2
     batch_size = 128
-    n_epoch = 100
+    n_epoch = 15
     test_n_samples = len(obv_all) // 10  # use 10% of data for testing
     all_dataset = tf.data.Dataset.from_tensor_slices(obv_all)
     test_dataset = all_dataset.take(test_n_samples)
@@ -80,7 +87,7 @@ if __name__ == "__main__":
     opt.__setattr__('learning_rate', args.vae_learning_rate)
 
     # initial our model using parameters in the config file
-    prior_model = Encoder(o_size, o_size, name='prior_model')
+    prior_model = FlexibleEncoder((args.o_size, 128, 128, args.o_size), name='prior_model', activation='relu')
 
     total_train_steps = 0
     
@@ -89,12 +96,14 @@ if __name__ == "__main__":
         for training_step, x_batch in enumerate(train_dataset):
             # split the batch data into observation and action (disgard reward for now)
             o_cur_batch, o_next_batch = x_batch[:, 0:2], x_batch[:, 2:]
-            gnll = train_step(prior_model, opt, o_cur_batch, o_next_batch)
+            gnll, l2_loss = train_step(prior_model, opt, o_cur_batch, o_next_batch)
 
             total_train_steps += 1
             tf.summary.scalar('GNLL', gnll.numpy(), step=total_train_steps)
+            tf.summary.scalar('L2_reg', l2_loss.numpy(), step=total_train_steps)
             if training_step % 100 == 0:
                 print("training_step {}, gnll: {:.3f}".format(training_step+1, gnll.numpy()))
+                print("training_step {}, L2: {:.3f}".format(training_step+1, l2_loss.numpy()))
         
         # evaluate the network
         for sample in test_dataset:
