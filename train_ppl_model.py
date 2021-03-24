@@ -48,12 +48,12 @@ class ReplayBuffer(object):
 if __name__ == '__main__':
     num_frames = 200000
     target_update_freq = 500
-    buffer_size = 50000
-    batch_size = 32
-    grad_norm_clip = 1.0
+    buffer_size = 500000
+    batch_size = 256  #TODO increase it, 256
+    grad_norm_clip = 10.0
     log_interval = 4
     keep_expert_batch = True
-    epsilon_start = 1.0
+    epsilon_start = 0.9  #TODO try linear schedule, try 0.9
     epsilon_final = 0.02
     epsilon_decay = num_frames / 20
     epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
@@ -75,7 +75,7 @@ if __name__ == '__main__':
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
     opt.__setattr__('epsilon', 1e-5)
-    expert_buffer = ReplayBuffer(100000)
+    expert_buffer = ReplayBuffer(buffer_size)
     replay_buffer = ReplayBuffer(buffer_size)
 
     ### load and pre-process human expert-batch data ###
@@ -110,7 +110,7 @@ if __name__ == '__main__':
         all_data[idx, 6] = 1
     all_data = all_data[mask]
 
-    for i in range(len(all_data)):
+    for i in range(min(len(all_data), buffer_size)):
         o_t, action, reward, o_tp1, done = all_data[i, :2], all_data[i, 2], all_data[i, 3], all_data[i, 4:6], all_data[i, 6]
         expert_buffer.push(o_t, action, reward, o_tp1, done)
 
