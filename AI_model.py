@@ -354,7 +354,7 @@ class PPLModel(tf.Module):
             R_ti = -1.0 * g_nll(obv_next,
             					o_prior_mu,
             					o_prior_std * o_prior_std,
-            					o_prior_log_sigma,
+            					# o_prior_log_sigma,
             					keep_batch=True)
 
             ### negative almost KL-D between state distribution from transition model and from
@@ -371,11 +371,11 @@ class PPLModel(tf.Module):
             R_te = g_nll(states_next_tran,
             			s_next_tran_mu,
             			s_next_tran_std * s_next_tran_std,
-            			s_next_tran_log_sigma,
+            			# s_next_tran_log_sigma,
             			keep_batch=True) - g_nll(states_next_tran,
             			s_next_enc_mu,
             			s_next_enc_std * s_next_enc_std,
-            			s_next_enc_log_sigma,
+            			# s_next_enc_log_sigma,
             			keep_batch=True)
             # clip the epistemic value
             R_te = tf.clip_by_value(R_te, -50.0, 50.0)
@@ -385,7 +385,7 @@ class PPLModel(tf.Module):
 
             # model reconstruction loss
             # loss_model = g_nll_old(o_next_mu, o_next_std, obv_next)
-            loss_model = g_nll(obv_next, o_next_mu, o_next_std * o_next_std, o_next_log_sigma)
+            loss_model = g_nll(obv_next, o_next_mu, o_next_std * o_next_std) #, o_next_log_sigma)
 
             # take the old EFE values given action indices
             efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
