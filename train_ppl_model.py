@@ -154,17 +154,23 @@ if __name__ == '__main__':
             n_episodes += 1
 
         if keep_expert_batch:
-            total_samples = len(expert_buffer) + len(replay_buffer)
-            if total_samples / len(replay_buffer) < batch_size:
-                # sample from both expert buffer and replay buffer
-                n_replay_samples = np.floor(batch_size * len(replay_buffer) / total_samples)
-                n_expert_samples = batch_size - n_replay_samples
+            # total_samples = len(expert_buffer) + len(replay_buffer)
+            # if total_samples / len(replay_buffer) < batch_size:
+            #     # sample from both expert buffer and replay buffer
+            #     n_replay_samples = np.floor(batch_size * len(replay_buffer) / total_samples)
+            #     n_expert_samples = batch_size - n_replay_samples
+            if len(replay_buffer) < batch_size // 2:
+                continue
+            else:
+                # sample equal number of samples from expert buffer and replay buffer
+                n_expert_samples = batch_size // 2
+                n_replay_samples = batch_size // 2
                 expert_batch = expert_buffer.sample(int(n_expert_samples))
                 replay_batch = replay_buffer.sample(int(n_replay_samples))
                 batch_data = [np.concatenate((expert_sample, replay_sample)) for expert_sample, replay_sample in zip(expert_batch, replay_batch)]
-            else:
-                # sample from expert buffer only
-                batch_data = expert_buffer.sample(batch_size)
+            # else:
+            #     # sample from expert buffer only
+            #     batch_data = expert_buffer.sample(batch_size)
         else:
             batch_data = replay_buffer.sample(batch_size)
 
@@ -177,7 +183,7 @@ if __name__ == '__main__':
             print("loss_efe nan at frame #", frame_idx)
             break
         
-        # clip gradients
+        ### clip gradients  ###
         crash = False
         grads_model_clipped = []
         for grad in grads_model:
@@ -209,6 +215,7 @@ if __name__ == '__main__':
         if crash:
             break
 
+        ### Gradient descend by Adam optimizer excluding variables with no gradients ###
         opt.apply_gradients(
             (grad, var) 
             for (grad, var) in zip(grads_model_clipped, pplModel.trainable_variables) 
@@ -240,6 +247,8 @@ if __name__ == '__main__':
         grads_max = tf.math.reduce_max(grads_efe_maxes)
         grads_min = tf.math.reduce_min(grads_efe_mins)
         
+
+        ### tensorboard logging for training statistics ###
         if frame_idx % log_interval == 0:
             tf.summary.scalar('loss_model', loss_model.numpy(), step=frame_idx)
             tf.summary.scalar('loss_efe', loss_efe.numpy(), step=frame_idx)
