@@ -36,7 +36,7 @@ def kl_d(mu_p, sigSqr_p, log_sig_p, mu_q, sigSqr_q, log_sig_q, keep_batch=False)
     # I like the variance-form of G-KL, I find it generally to be more stable
     # Note that I expanded the formula a bit further using log difference rule
     ############################################################################
-    eps = 1e-5
+    eps = 1e-6
     term1 = log_sig_q - log_sig_p
     diff = mu_p - mu_q
     term2 = (sigSqr_p + (diff * diff))/(sigSqr_q * 2 + eps)
@@ -49,25 +49,28 @@ def kl_d(mu_p, sigSqr_p, log_sig_p, mu_q, sigSqr_q, log_sig_q, keep_batch=False)
 
 
 @tf.function
-def g_nll(mu, sigSqr, log_sigSqr, x_true, keep_batch=False):
+def g_nll(X, mu, sigSqr, log_sig=None, keep_batch=False):
     """ Gaussian Negative Log Likelihood loss function
         --> assumes N(x; mu, sig^2)
 
         mu <- external mean
         sigSqr <- external variance
+        log_sig <- pre-computed log(sigma) (numerically stable form)
         keep_batch <-
-        log_sigSqr <- optional pre-computed log(sig^2) (numerically stable form)
     """
     ############################################################################
     # Alex-style - avoid logarithms whenever you can pre-compute them
     # I like the variance-form of GNLL, I find it generally to be more stable
-    eps = 1e-5
-    diff = x_true - mu # pre-compute this quantity
+    eps = 1e-6
+    diff = X - mu # pre-compute this quantity
     term1 = -( (diff * diff)/(sigSqr *2 + eps) ) # central term
-    term2 = -log_sigSqr  * 0.5 # numerically more stable form
-    #term2 = -tf.math.log(sigSqr) * 0.5
+    if log_sig is not None:
+        # expanded out the log(sigma * sigma) = log(sigma) + log(sigma)
+        term2 = -(log_sig + log_sig) * 0.5 # numerically more stable form
+    else:
+        term2 = -tf.math.log(sigSqr) * 0.5
     term3 = -tf.math.log(np.pi * 2) * 0.5 # constant term
-    nll = -( term1 + term2 + term3 ) # -( LL )
+    nll = -( term1 + term2 + term3 ) # -( LL ) = NLL
     nll = tf.reduce_sum(nll, axis=-1) # gets GNLL per sample in batch (a column vector)
     ############################################################################
     if not keep_batch:
@@ -145,7 +148,7 @@ huber = tf.keras.losses.Huber()
 
 class Encoder(tf.Module):
     ''' transition / posterior model of the active inference framework '''
-    def __init__(self, dim_input, dim_z, n_samples=1, name='Encoder', activation='relu6'):
+    def __init__(self, dim_input, dim_z, n_samples=1, name='Encoder', activation='relu6'): #TODO try ReLU
         super().__init__(name=name)
         self.dim_z = dim_z  # latent dimension
         self.N = n_samples
@@ -207,7 +210,7 @@ class Encoder(tf.Module):
 class FlexibleEncoder(tf.Module):
     ''' Generic Gaussian encoder model based on Dense layer. Output mean and std as well
     as samples from the learned distribution '''
-    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu6'):
+    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu'):
         super().__init__(name=name)
         self.dim_z = layer_dims[-1]
         self.N = n_samples
@@ -220,6 +223,8 @@ class FlexibleEncoder(tf.Module):
         self.std = None
         if activation == 'tanh':
             self.activation = tf.nn.tanh
+        elif activation == 'relu':
+            self.activation = tf.nn.relu
         elif activation == 'relu6':
             self.activation = tf.nn.relu6
         elif activation == 'swish':
@@ -289,14 +294,14 @@ class PPLModel(tf.Module):
         self.a_size = args.a_width  # action size
         self.n_samples = args.vae_n_samples
         self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
-        self.encoder = FlexibleEncoder((self.dim_obv, 64, 64, self.dim_z), name='Encoder')
-        self.decoder = FlexibleEncoder((self.dim_z, 64, 64, self.dim_obv), name='Decoder')
-        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 64, 64, self.dim_z), name='Transition')
+        self.encoder = FlexibleEncoder((self.dim_obv, 128, 128, 128, self.dim_z), name='Encoder')
+        self.decoder = FlexibleEncoder((self.dim_z, 128, 128, 128, self.dim_obv), name='Decoder')
+        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 128, 128, 128, self.dim_z), name='Transition')
         # self.encoder = Encoder(self.dim_obv, self.dim_z, name='Encoder')
         # self.decoder = Encoder(self.dim_z, self.dim_obv, name='Decoder')
         # self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
-        self.EFEnet = FlexibleMLP((self.dim_z, 128, 64, self.a_size), name='EFEnet')
-        self.EFEnet_target = FlexibleMLP((self.dim_z, 128, 64, self.a_size), name='EFEnet_target', trainable=False)
+        self.EFEnet = FlexibleMLP((self.dim_z, 128, 128, 128, self.a_size), name='EFEnet')
+        self.EFEnet_target = FlexibleMLP((self.dim_z, 128, 128, 128, self.a_size), name='EFEnet_target', trainable=False)
         self.update_target()
         self.priorModel = priorModel
         self.obv_t = None
@@ -336,7 +341,7 @@ class PPLModel(tf.Module):
             # o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
             o_next_hat, o_next_mu, o_next_std, o_next_log_sigma = self.decoder(states_next_tran)
 
-            o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
+            o_next_prior, o_prior_mu, o_prior_std, o_prior_log_sigma = self.priorModel(obv_t)
 
             # states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
             states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_sigma = self.encoder(obv_next)
@@ -346,11 +351,11 @@ class PPLModel(tf.Module):
 
             # difference between preferred future and actual future, i.e. instrumental term
             # R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
-            R_ti = -1.0 * g_nll(o_prior_mu,
+            R_ti = -1.0 * g_nll(obv_next,
+            					o_prior_mu,
             					o_prior_std * o_prior_std,
-            					2 * tf.math.log(o_prior_std),
-            					obv_next,
-            					keep_batch=True) #TODO re-train prior model
+            					o_prior_log_sigma,
+            					keep_batch=True)
 
             ### negative almost KL-D between state distribution from transition model and from
             # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###
@@ -363,20 +368,24 @@ class PPLModel(tf.Module):
             # 					s_next_enc_log_sigma,
             # 					keep_batch=True)
             ### alternative epistemic term using sampled next state as X ###
-            R_te = g_nll(s_next_tran_mu,
+            R_te = g_nll(states_next_tran,
+            			s_next_tran_mu,
             			s_next_tran_std * s_next_tran_std,
-            			2 * s_next_tran_log_sigma,
-            			states_next_tran) - g_nll(s_next_enc_mu,
+            			s_next_tran_log_sigma,
+            			keep_batch=True) - g_nll(states_next_tran,
+            			s_next_enc_mu,
             			s_next_enc_std * s_next_enc_std,
-            			2 * s_next_enc_log_sigma,
-            			states_next_tran)
+            			s_next_enc_log_sigma,
+            			keep_batch=True)
+            # clip the epistemic value
+            R_te = tf.clip_by_value(R_te, -50.0, 50.0)
 
             # the nagative EFE value, i.e. the reward. Note the sign here
             R_t = R_ti + R_te
 
             # model reconstruction loss
             # loss_model = g_nll_old(o_next_mu, o_next_std, obv_next)
-            loss_model = g_nll(o_next_mu, o_next_std * o_next_std, 2 * o_next_log_sigma, obv_next)
+            loss_model = g_nll(obv_next, o_next_mu, o_next_std * o_next_std, o_next_log_sigma)
 
             # take the old EFE values given action indices
             efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
