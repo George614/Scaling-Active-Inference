@@ -294,27 +294,31 @@ class PPLModel(tf.Module):
         self.a_size = args.a_width  # action size
         self.n_samples = args.vae_n_samples
         self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
-        self.encoder = FlexibleEncoder((self.dim_obv, 128, 128, 128, self.dim_z), name='Encoder')
-        self.decoder = FlexibleEncoder((self.dim_z, 128, 128, 128, self.dim_obv), name='Decoder')
-        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 128, 128, 128, self.dim_z), name='Transition')
+        self.encoder = FlexibleEncoder((self.dim_obv, 128, 128, self.dim_z), name='Encoder')
+        self.decoder = FlexibleEncoder((self.dim_z, 128, 128, self.dim_obv), name='Decoder')
+        self.transition = FlexibleEncoder((self.dim_z + self.a_size, 128, 128, self.dim_z), name='Transition')
         # self.encoder = Encoder(self.dim_obv, self.dim_z, name='Encoder')
         # self.decoder = Encoder(self.dim_z, self.dim_obv, name='Decoder')
         # self.transition = Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
-        self.EFEnet = FlexibleMLP((self.dim_z, 128, 128, 128, self.a_size), name='EFEnet')
-        self.EFEnet_target = FlexibleMLP((self.dim_z, 128, 128, 128, self.a_size), name='EFEnet_target', trainable=False)
+        self.EFEnet = FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet')
+        self.EFEnet_target = FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet_target', trainable=False)
         self.update_target()
         self.priorModel = priorModel
         self.obv_t = None
         self.a_t = None
         self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
+        self.training = tf.Variable(True, trainable=False) # training mode
         self.l2_reg = args.l2_reg
 
     @tf.function
     def act(self, obv_t):
-        # action selection using o_t and EFE network
-        states, _, _, _ = self.encoder(obv_t)
-        efe_t = self.EFEnet(states)
         if tf.random.uniform(shape=()) > self.epsilon:
+            # action selection using o_t and EFE network
+            states, _, _, _ = self.encoder(obv_t)
+            if self.training:
+                efe_t = self.EFEnet(states)
+            else:
+                efe_t = self.EFEnet_target(states)
             action = tf.argmax(efe_t, axis=-1, output_type=tf.int32)
         else:
             action = tf.random.uniform(shape=(), maxval=self.a_size, dtype=tf.int32)
@@ -341,7 +345,7 @@ class PPLModel(tf.Module):
             # o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
             o_next_hat, o_next_mu, o_next_std, o_next_log_sigma = self.decoder(states_next_tran)
 
-            o_next_prior, o_prior_mu, o_prior_std, o_prior_log_sigma = self.priorModel(obv_t)
+            o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
 
             # states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
             states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_sigma = self.encoder(obv_next)
@@ -352,33 +356,33 @@ class PPLModel(tf.Module):
             # difference between preferred future and actual future, i.e. instrumental term
             # R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
             R_ti = -1.0 * g_nll(obv_next,
-            					o_prior_mu,
-            					o_prior_std * o_prior_std,
-            					# o_prior_log_sigma,
-            					keep_batch=True)
+                                o_prior_mu,
+                                o_prior_std * o_prior_std,
+                                # o_prior_log_sigma,
+                                keep_batch=True)
 
             ### negative almost KL-D between state distribution from transition model and from
             # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###
             # R_te = -1.0 * kl_d_old(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
             # R_te = -1.0 * kl_d(s_next_tran_mu,
-            # 					s_next_tran_std * s_next_tran_std,
-            # 					s_next_tran_log_sigma,
-            # 					s_next_enc_mu,
-            # 					s_next_enc_std * s_next_enc_std,
-            # 					s_next_enc_log_sigma,
-            # 					keep_batch=True)
+            #                     s_next_tran_std * s_next_tran_std,
+            #                     tf.math.log(s_next_tran_std),
+            #                     s_next_enc_mu,
+            #                     s_next_enc_std * s_next_enc_std,
+            #                     tf.math.log(s_next_enc_std),
+            #                     keep_batch=True)
             ### alternative epistemic term using sampled next state as X ###
             R_te = g_nll(states_next_tran,
-            			s_next_tran_mu,
-            			s_next_tran_std * s_next_tran_std,
-            			# s_next_tran_log_sigma,
-            			keep_batch=True) - g_nll(states_next_tran,
-            			s_next_enc_mu,
-            			s_next_enc_std * s_next_enc_std,
-            			# s_next_enc_log_sigma,
-            			keep_batch=True)
+                        s_next_tran_mu,
+                        s_next_tran_std * s_next_tran_std,
+                        s_next_tran_log_sigma,
+                        keep_batch=True) - g_nll(states_next_tran,
+                        s_next_enc_mu,
+                        s_next_enc_std * s_next_enc_std,
+                        s_next_enc_log_sigma,
+                        keep_batch=True)
             # clip the epistemic value
-            R_te = tf.clip_by_value(R_te, -50.0, 50.0)
+            # R_te = tf.clip_by_value(R_te, -50.0, 50.0)
 
             # the nagative EFE value, i.e. the reward. Note the sign here
             R_t = R_ti + R_te
