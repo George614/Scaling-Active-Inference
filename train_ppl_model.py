@@ -53,7 +53,7 @@ if __name__ == '__main__':
     target_update_ep = 2  # in terms of episodes
     buffer_size = 50000
     batch_size = 256
-    grad_norm_clip = 2.0
+    grad_norm_clip = 10.0
     log_interval = 4
     keep_expert_batch = True
     epsilon_start = 0.9
@@ -181,7 +181,7 @@ if __name__ == '__main__':
             [batch_obv, batch_action, batch_reward, batch_next_obv, batch_done] = batch_data
             
             batch_action = tf.one_hot(batch_action, depth=args.a_width)
-            grads_efe, grads_model, grads_l2, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done)
+            grads_efe, grads_model, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done)
             
             if tf.math.is_nan(loss_efe):
                 print("loss_efe nan at frame #", frame_idx)
@@ -207,15 +207,6 @@ if __name__ == '__main__':
                         crash = True
                 grads_efe_clipped.append(grad)
 
-            grads_l2_clipped = []
-            for grad in grads_l2:
-                if grad is not None:
-                    grad = tf.clip_by_norm(grad, clip_norm=grad_norm_clip)
-                    if tf.math.reduce_any(tf.math.is_nan(grad)):
-                        print("grad_l2 nan at frame # ", frame_idx)
-                        crash = True
-                grads_l2_clipped.append(grad)
-
             if crash:
                 break
 
@@ -230,37 +221,34 @@ if __name__ == '__main__':
                 for (grad, var) in zip(grads_efe_clipped, pplModel.trainable_variables) 
                 if grad is not None
                 )
-            opt.apply_gradients(
-                (grad, var) 
-                for (grad, var) in zip(grads_l2_clipped, pplModel.trainable_variables) 
-                if grad is not None
-                )
 
             weights_maxes = [tf.math.reduce_max(var) for var in pplModel.trainable_variables]
             weights_mins = [tf.math.reduce_min(var) for var in pplModel.trainable_variables]
             weights_max = tf.math.reduce_max(weights_maxes)
             weights_min = tf.math.reduce_min(weights_mins)
 
-            # grads_model_maxes = [tf.math.reduce_max(grad) for grad in grads_model if grad is not None]
-            # grads_model_mins = [tf.math.reduce_min(grad) for grad in grads_model if grad is not None]
-            # grads_max = tf.math.reduce_max(grads_model_maxes)
-            # grads_min = tf.math.reduce_min(grads_model_mins)
+            grads_model_maxes = [tf.math.reduce_max(grad) for grad in grads_model if grad is not None]
+            grads_model_mins = [tf.math.reduce_min(grad) for grad in grads_model if grad is not None]
+            grads_model_max = tf.math.reduce_max(grads_model_maxes)
+            grads_model_min = tf.math.reduce_min(grads_model_mins)
 
             grads_efe_maxes = [tf.math.reduce_max(grad) for grad in grads_efe if grad is not None]
             grads_efe_mins = [tf.math.reduce_min(grad) for grad in grads_efe if grad is not None]
-            grads_max = tf.math.reduce_max(grads_efe_maxes)
-            grads_min = tf.math.reduce_min(grads_efe_mins)
+            grads_efe_max = tf.math.reduce_max(grads_efe_maxes)
+            grads_efe_min = tf.math.reduce_min(grads_efe_mins)
             
 
             ### tensorboard logging for training statistics ###
             if frame_idx % log_interval == 0:
-                tf.summary.scalar('loss_model', loss_model.numpy(), step=frame_idx)
-                tf.summary.scalar('loss_efe', loss_efe.numpy(), step=frame_idx)
-                tf.summary.scalar('loss_l2', loss_l2.numpy(), step=frame_idx)
-                tf.summary.scalar('weights_max', weights_max.numpy(), step=frame_idx)
-                tf.summary.scalar('weights_min', weights_min.numpy(), step=frame_idx)
-                tf.summary.scalar('grads_max', grads_max.numpy(), step=frame_idx)
-                tf.summary.scalar('grads_min', grads_min.numpy(), step=frame_idx)
+                tf.summary.scalar('loss_model', loss_model, step=frame_idx)
+                tf.summary.scalar('loss_efe', loss_efe, step=frame_idx)
+                tf.summary.scalar('loss_l2', loss_l2, step=frame_idx)
+                tf.summary.scalar('weights_max', weights_max, step=frame_idx)
+                tf.summary.scalar('weights_min', weights_min, step=frame_idx)
+                tf.summary.scalar('grads_model_max', grads_model_max, step=frame_idx)
+                tf.summary.scalar('grads_model_min', grads_model_min, step=frame_idx)
+                tf.summary.scalar('grads_efe_max', grads_efe_max, step=frame_idx)
+                tf.summary.scalar('grads_efe_min', grads_efe_min, step=frame_idx)
                 tf.summary.scalar('R_ti_max', tf.math.reduce_max(R_ti), step=frame_idx)
                 tf.summary.scalar('R_ti_min', tf.math.reduce_min(R_ti), step=frame_idx)
                 tf.summary.scalar('R_te_max', tf.math.reduce_max(R_te), step=frame_idx)

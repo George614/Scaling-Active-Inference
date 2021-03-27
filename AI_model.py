@@ -315,10 +315,7 @@ class PPLModel(tf.Module):
         if tf.random.uniform(shape=()) > self.epsilon:
             # action selection using o_t and EFE network
             states, _, _, _ = self.encoder(obv_t)
-            if self.training:
-                efe_t = self.EFEnet(states)
-            else:
-                efe_t = self.EFEnet_target(states)
+            efe_t = self.EFEnet(states)
             action = tf.argmax(efe_t, axis=-1, output_type=tf.int32)
         else:
             action = tf.random.uniform(shape=(), maxval=self.a_size, dtype=tf.int32)
@@ -350,46 +347,58 @@ class PPLModel(tf.Module):
             # states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
             states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_sigma = self.encoder(obv_next)
 
-            # difference between preferred future and predicted future
-            # R_ti = kl_d(o_prior_mu, o_prior_std, o_next_mu, o_next_std)
+            with tape.stop_recording():
+                # Alternative: difference between preferred future and predicted future
+                # R_ti = kl_d_old(o_prior_mu, o_prior_std, o_next_mu, o_next_std, keep_batch=True)
+                
+                # difference between preferred future and actual future, i.e. instrumental term
+                # R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
+                R_ti = -1.0 * g_nll(obv_next,
+                                    o_prior_mu,
+                                    o_prior_std * o_prior_std,
+                                    # o_prior_log_sigma,
+                                    keep_batch=True)
 
-            # difference between preferred future and actual future, i.e. instrumental term
-            # R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
-            R_ti = -1.0 * g_nll(obv_next,
-                                o_prior_mu,
-                                o_prior_std * o_prior_std,
-                                # o_prior_log_sigma,
-                                keep_batch=True)
+                ### negative almost KL-D between state distribution from transition model and from
+                # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###
+                # R_te = -1.0 * kl_d_old(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
+                R_te = -1.0 * kl_d(s_next_tran_mu,
+                                    s_next_tran_std * s_next_tran_std,
+                                    tf.math.log(s_next_tran_std),
+                                    s_next_enc_mu,
+                                    s_next_enc_std * s_next_enc_std,
+                                    tf.math.log(s_next_enc_std),
+                                    keep_batch=True)
+                ### alternative epistemic term using sampled next state as X ###
+                # R_te = g_nll(states_next_tran,
+                #             s_next_tran_mu,
+                #             s_next_tran_std * s_next_tran_std,
+                #             # s_next_tran_log_sigma,
+                #             keep_batch=True) - g_nll(states_next_tran,
+                #             s_next_enc_mu,
+                #             s_next_enc_std * s_next_enc_std,
+                #             # s_next_enc_log_sigma,
+                #             keep_batch=True)
+                # clip the epistemic value
+                R_te = tf.clip_by_value(R_te, -50.0, 50.0)
 
-            ### negative almost KL-D between state distribution from transition model and from
-            # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###
-            # R_te = -1.0 * kl_d_old(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
-            # R_te = -1.0 * kl_d(s_next_tran_mu,
-            #                     s_next_tran_std * s_next_tran_std,
-            #                     tf.math.log(s_next_tran_std),
-            #                     s_next_enc_mu,
-            #                     s_next_enc_std * s_next_enc_std,
-            #                     tf.math.log(s_next_enc_std),
-            #                     keep_batch=True)
-            ### alternative epistemic term using sampled next state as X ###
-            R_te = g_nll(states_next_tran,
-                        s_next_tran_mu,
-                        s_next_tran_std * s_next_tran_std,
-                        s_next_tran_log_sigma,
-                        keep_batch=True) - g_nll(states_next_tran,
-                        s_next_enc_mu,
-                        s_next_enc_std * s_next_enc_std,
-                        s_next_enc_log_sigma,
-                        keep_batch=True)
-            # clip the epistemic value
-            # R_te = tf.clip_by_value(R_te, -50.0, 50.0)
+                # the nagative EFE value, i.e. the reward. Note the sign here
+                R_t = R_ti + R_te
 
-            # the nagative EFE value, i.e. the reward. Note the sign here
-            R_t = R_ti + R_te
+            ## model reconstruction loss ##
+            loss_reconst = g_nll(obv_next, o_next_mu, o_next_std * o_next_std) #, o_next_log_sigma)
+            # regularization for weights
+            loss_l2 = tf.add_n([tf.nn.l2_loss(var) for var in self.trainable_variables if 'W' in var.name])
+            loss_l2 *= self.l2_reg
+            # latent penalty term
+            loss_latent = kl_d(s_next_enc_mu,
+                                s_next_enc_std * s_next_enc_std,
+                                tf.math.log(s_next_enc_std),
+                                s_next_tran_mu,
+                                s_next_tran_std * s_next_tran_std,
+                                tf.math.log(s_next_tran_std))
 
-            # model reconstruction loss
-            # loss_model = g_nll_old(o_next_mu, o_next_std, obv_next)
-            loss_model = g_nll(obv_next, o_next_mu, o_next_std * o_next_std) #, o_next_log_sigma)
+            loss_model = loss_reconst + loss_latent + loss_l2
 
             # take the old EFE values given action indices
             efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
@@ -402,21 +411,18 @@ class PPLModel(tf.Module):
                 # take the new EFE values
                 efe_new = tf.math.reduce_sum(efe_target * onehot_a_next, axis=-1)
 
-            # TD loss
+            ## TD loss ##
             done = tf.cast(done, dtype=tf.float32)
-            # use Huber loss instead of MSE loss
-            loss_efe = huber(efe_old, (R_t + efe_new * (1 - done)))
-
-            # regularization for weights
-            loss_l2 = tf.add_n([tf.nn.l2_loss(var) for var in self.trainable_variables if 'W' in var.name])
-            loss_l2 *= self.l2_reg
+            # Alternative: use Huber loss instead of MSE loss
+            # loss_efe = huber(efe_old, (R_t + efe_new * (1 - done)))
+            # use MSE loss for the TD error
+            loss_efe = mse(efe_old, (R_t + efe_new * (1 - done)))
 
         # calculate gradient w.r.t model reconstruction and TD respectively
         grads_model = tape.gradient(loss_model, self.trainable_variables)
         grads_efe = tape.gradient(loss_efe, self.trainable_variables)
-        grads_l2 = tape.gradient(loss_l2, self.trainable_variables)
 
-        return grads_efe, grads_model, grads_l2, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target
+        return grads_efe, grads_model, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target
 
 
 class StateModel(tf.Module):
