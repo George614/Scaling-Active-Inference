@@ -309,6 +309,7 @@ class PPLModel(tf.Module):
         self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
         self.training = tf.Variable(True, trainable=False) # training mode
         self.l2_reg = args.l2_reg
+        self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
 
     @tf.function
     def act(self, obv_t):
@@ -397,8 +398,17 @@ class PPLModel(tf.Module):
                                 s_next_tran_mu,
                                 s_next_tran_std * s_next_tran_std,
                                 tf.math.log(s_next_tran_std))
+            # latent regularization term
+            unit_Gaussian_mu = tf.zeros(tf.shape(s_next_enc_mu))
+            unit_Gaussian_std = tf.ones(tf.shape(s_next_enc_std))
+            loss_latent_reg = kl_d(s_next_enc_mu,
+                                    s_next_enc_std * s_next_enc_std,
+                                    tf.math.log(s_next_enc_std),
+                                    unit_Gaussian_mu,
+                                    unit_Gaussian_std * unit_Gaussian_std,
+                                    tf.math.log(unit_Gaussian_std))
 
-            loss_model = loss_reconst + loss_latent + loss_l2
+            loss_model = loss_reconst + self.gamma * loss_latent + (1 - self.gamma) * loss_latent_reg + loss_l2
 
             # take the old EFE values given action indices
             efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
