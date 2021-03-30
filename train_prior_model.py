@@ -26,11 +26,10 @@ def train_step(model, optimizer, o_cur, o_next):
         # regularization for weights
         loss_l2 = tf.add_n([tf.nn.l2_loss(var) for var in model.trainable_variables if 'W' in var.name])
         loss_l2 *= args.l2_reg
+        loss_total = gnll + loss_l2
 
-    grads_gnll = tape.gradient(gnll, model.trainable_variables)
-    grads_l2 = tape.gradient(loss_l2, model.trainable_variables)
-    optimizer.apply_gradients(zip(grads_gnll, model.trainable_variables))
-    optimizer.apply_gradients(zip(grads_l2, model.trainable_variables))
+    grads_total = tape.gradient(loss_total, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads_total, model.trainable_variables))
     return gnll, loss_l2
 
 
@@ -39,7 +38,7 @@ def eval_step(model, o_cur, o_next):
     # z_sample, mu_o, std_o = model(o_cur)
     # gnll = g_nll_old(mu_o, std_o, o_next)
     z_sample, mu_o, std_o, log_sigma_o = model(o_cur)
-    gnll = g_nll(o_next, mu_o, std_o * std_o, log_sigma_o)
+    gnll = g_nll(o_next, mu_o, std_o * std_o)
     return gnll
     
 
@@ -66,7 +65,7 @@ if __name__ == "__main__":
     obv_all = obv_all[np.not_equal(done, 1)]
     
     batch_size = 128
-    n_epoch = 15
+    n_epoch = 100
     test_n_samples = len(obv_all) // 10  # use 10% of data for testing
     all_dataset = tf.data.Dataset.from_tensor_slices(obv_all)
     test_dataset = all_dataset.take(test_n_samples)
