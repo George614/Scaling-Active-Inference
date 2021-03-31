@@ -150,8 +150,8 @@ if __name__ == '__main__':
         ### training the PPL model ###
         pplModel.training.assign(True)
         done = False
-        gamma = gamma_by_episode(ep_idx)
-        pplModel.gamma.assign(gamma)
+        # gamma = gamma_by_episode(ep_idx)
+        # pplModel.gamma.assign(gamma)
         while not done:
             frame_idx += 1
             epsilon = epsilon_by_frame(frame_idx)
