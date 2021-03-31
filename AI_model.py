@@ -238,12 +238,12 @@ class FlexibleEncoder(tf.Module):
             x = layer(x)
             x = self.activation(x)
         mu = self.layers[-2](x)
-        # raw_std = self.layers[-1](x)
-        # # softplus is supposed to avoid numerical overflow
-        # std = tf.clip_by_value(tf.math.softplus(raw_std), 0.01, 10.0)
-        log_sigma = self.layers[-1](x)
-        std = tf.math.exp(log_sigma)
-        std = tf.clip_by_value(std, 0.01, 10.0)
+        raw_std = self.layers[-1](x)
+        # softplus is supposed to avoid numerical overflow
+        std = tf.clip_by_value(tf.math.softplus(raw_std), 0.01, 10.0)
+        # log_sigma = self.layers[-1](x)
+        # std = tf.math.exp(log_sigma)
+        # std = tf.clip_by_value(std, 0.01, 10.0)
         if self.mu is None:
             batch_size = tf.shape(x)[0]
             self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
@@ -253,7 +253,7 @@ class FlexibleEncoder(tf.Module):
             self.std.assign(std)
         z_sample = sample(mu, std)
 
-        return z_sample, mu, std, log_sigma
+        return z_sample, mu, std #, log_sigma
 
 
 class FlexibleMLP(tf.Module):
@@ -315,7 +315,7 @@ class PPLModel(tf.Module):
     def act(self, obv_t):
         if tf.random.uniform(shape=()) > self.epsilon:
             # action selection using o_t and EFE network
-            states, _, _, _ = self.encoder(obv_t)
+            states, _, _ = self.encoder(obv_t)
             efe_t = self.EFEnet(states)
             action = tf.argmax(efe_t, axis=-1, output_type=tf.int32)
         else:
@@ -332,33 +332,36 @@ class PPLModel(tf.Module):
     def train_step(self, obv_t, obv_next, action, done):
         with tf.GradientTape(persistent=True) as tape:
             ### run s_t and a_t through the PPL model ###
-            # states, state_mu, state_std = self.encoder(obv_t)
-            states, state_mu, state_std, state_log_sigma = self.encoder(obv_t)
+            states, state_mu, state_std = self.encoder(obv_t)
+            # states, state_mu, state_std, state_log_sigma = self.encoder(obv_t)
 
             efe_t = self.EFEnet(states)  # in batch, output shape (batch x a_space_size)
 
-            # states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, action], axis=-1))
-            states_next_tran, s_next_tran_mu, s_next_tran_std, s_next_tran_log_sigma = self.transition(tf.concat([states, action], axis=-1))
+            states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, action], axis=-1))
+            # states_next_tran, s_next_tran_mu, s_next_tran_std, s_next_tran_log_sigma = self.transition(tf.concat([states, action], axis=-1))
 
-            # o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
-            o_next_hat, o_next_mu, o_next_std, o_next_log_sigma = self.decoder(states_next_tran)
+            o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
+            # o_next_hat, o_next_mu, o_next_std, o_next_log_sigma = self.decoder(states_next_tran)
 
             o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
 
-            # states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
-            states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_sigma = self.encoder(obv_next)
+            states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
+            # states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_sigma = self.encoder(obv_next)
 
             with tape.stop_recording():
                 # Alternative: difference between preferred future and predicted future
-                # R_ti = kl_d_old(o_prior_mu, o_prior_std, o_next_mu, o_next_std, keep_batch=True)
+                R_ti = -1.0 * g_nll(o_next_hat,
+                					o_prior_mu,
+                					o_prior_std * o_prior_std,
+                					keep_batch=True)
                 
                 # difference between preferred future and actual future, i.e. instrumental term
                 # R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
-                R_ti = -1.0 * g_nll(obv_next,
-                                    o_prior_mu,
-                                    o_prior_std * o_prior_std,
-                                    # o_prior_log_sigma,
-                                    keep_batch=True)
+                # R_ti = -1.0 * g_nll(obv_next,
+                #                     o_prior_mu,
+                #                     o_prior_std * o_prior_std,
+                #                     # o_prior_log_sigma,
+                #                     keep_batch=True)
 
                 ### negative almost KL-D between state distribution from transition model and from
                 # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###
