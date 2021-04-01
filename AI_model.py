@@ -343,17 +343,17 @@ class PPLModel(tf.Module):
             o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
             # o_next_hat, o_next_mu, o_next_std, o_next_log_sigma = self.decoder(states_next_tran)
 
-            o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
-
             states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
             # states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_sigma = self.encoder(obv_next)
 
             with tape.stop_recording():
+                o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
+                
                 # Alternative: difference between preferred future and predicted future
                 R_ti = -1.0 * g_nll(o_next_hat,
-                					o_prior_mu,
-                					o_prior_std * o_prior_std,
-                					keep_batch=True)
+                                    o_prior_mu,
+                                    o_prior_std * o_prior_std,
+                                    keep_batch=True)
                 
                 # difference between preferred future and actual future, i.e. instrumental term
                 # R_ti = -1.0 * g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
