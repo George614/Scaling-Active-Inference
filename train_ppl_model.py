@@ -1,8 +1,6 @@
 import logging
 import numpy as np
-from collections import deque
 import matplotlib.pyplot as plt
-import random
 import math
 import gym
 import os
@@ -14,35 +12,13 @@ import tensorflow as tf
 from datetime import datetime
 from utils import PARSER
 from AI_models import PPLModel
+from buffers import ReplayBuffer
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
 gpu_devices = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpu_devices:
     tf.config.experimental.set_memory_growth(gpu, True)
-
-
-class ReplayBuffer(object):
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
-    
-    def push(self, state, action, reward, next_state, done):
-        state      = np.expand_dims(state, 0)
-        next_state = np.expand_dims(next_state, 0)
-            
-        self.buffer.append((state, action, reward, next_state, done))
-    
-    def sample(self, batch_size):
-        state, action, reward, next_state, done = zip(*random.sample(self.buffer, batch_size))
-        state = np.asarray(np.concatenate(state), dtype=np.float32)
-        next_state = np.asarray(np.concatenate(next_state), dtype=np.float32)
-        action = np.asarray(action, dtype=np.int32)
-        reward = np.asarray(reward, dtype=np.float32)
-        done = np.asarray(done, dtype=bool)
-        return (state, action, reward, next_state, done)
-    
-    def __len__(self):
-        return len(self.buffer)
 
 
 if __name__ == '__main__':
@@ -56,6 +32,7 @@ if __name__ == '__main__':
     grad_norm_clip = 10.0
     log_interval = 4
     keep_expert_batch = True
+    seed = 42
     # epsilon exponential decay schedule
     epsilon_start = 0.9
     epsilon_final = 0.02
@@ -73,7 +50,6 @@ if __name__ == '__main__':
     plt.title("Exponential decay schedule for epsilon")
     plt.show()
 
-
     ### use tensorboard for monitoring training if needed ###
     now = datetime.now()
     model_save_path = "results/ppl_model/{}/".format(args.env_name)
@@ -88,8 +64,11 @@ if __name__ == '__main__':
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
     opt.__setattr__('epsilon', 1e-5)
-    expert_buffer = ReplayBuffer(buffer_size)
-    replay_buffer = ReplayBuffer(buffer_size)
+    expert_buffer = ReplayBuffer(buffer_size, seed=seed)
+    replay_buffer = ReplayBuffer(buffer_size, seed=seed)
+    # set seeds
+    tf.random.set_seed(seed)
+    np.random.seed(seed)
 
     ### load and pre-process human expert-batch data ###
     # print("Human expert batch data path: ", args.prior_data_path)
