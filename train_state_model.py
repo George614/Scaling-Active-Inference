@@ -1,8 +1,6 @@
 import logging
 import numpy as np
-import math
 import os
-import matplotlib.pyplot as plt
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL
 logging.getLogger('tensorflow').setLevel(logging.FATAL)
@@ -10,7 +8,7 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 import tensorflow as tf
 from datetime import datetime
 from utils import PARSER
-from AI_model import StateModel
+from AI_models import StateModel
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -129,30 +127,30 @@ if __name__ == "__main__":
             
             x_batches = [tf.split(x_batch, num_or_size_splits=2, axis=1)]
             loss_episode = 0
-		    gnll_episode = 0
-		    kld_episode = 0
+            gnll_episode = 0
+            kld_episode = 0
             for x_batch in x_batches:
-            	o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 1:]
-	    		loss_accum = 0
-			    with tf.GradientTape() as tape:
-			    	for time_step in range(tf.shape(o_cur_batch)[1]):
-			    		mask = tf.not_equal(o_cur_batch[:, time_step, 0], 0)
-			    		if time_step == 0:
-			    			loss_chunk = 0
-		                    gnll_chunk = 0
-		                    kld_chunk = 0
-			    			total_loss, gnll, kld, state_post = stateModel(initial_states, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :], mask)
-			    		else:
-		        			total_loss, gnll, kld, state_post = stateModel(state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :], mask)
-			    		loss_chunk += total_loss
-			    		gnll_chunk += gnll.numpy()
-                		kld_chunk += kld.numpy()
-			    gradients = tape.gradient(loss_chunk, stateModel.trainable_variables)
-			    opt.apply_gradients(zip(gradients, stateModel.trainable_variables))
+                o_cur_batch, a_prev_batch = x_batch[:, :, 0:1], x_batch[:, :, 1:]
+                loss_accum = 0
+                with tf.GradientTape() as tape:
+                    for time_step in range(tf.shape(o_cur_batch)[1]):
+                        mask = tf.not_equal(o_cur_batch[:, time_step, 0], 0)
+                        if time_step == 0:
+                            loss_chunk = 0
+                            gnll_chunk = 0
+                            kld_chunk = 0
+                            total_loss, gnll, kld, state_post = stateModel(initial_states, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :], mask)
+                        else:
+                            total_loss, gnll, kld, state_post = stateModel(state_post, a_prev_batch[:, time_step, :], o_cur_batch[:, time_step, :], mask)
+                        loss_chunk += total_loss
+                        gnll_chunk += gnll.numpy()
+                        kld_chunk += kld.numpy()
+                gradients = tape.gradient(loss_chunk, stateModel.trainable_variables)
+                opt.apply_gradients(zip(gradients, stateModel.trainable_variables))
 
-			    loss_episode += loss_chunk.numpy()
-		    	gnll_episode += gnll_chunk
-		    	kld_episode += kld_chunk
+                loss_episode += loss_chunk.numpy()
+                gnll_episode += gnll_chunk
+                kld_episode += kld_chunk
             
             total_train_steps += 1
             tf.summary.scalar('total', loss_episode, step=total_train_steps)

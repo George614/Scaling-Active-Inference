@@ -8,7 +8,8 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 import tensorflow as tf
 from datetime import datetime
 from utils import PARSER
-from AI_model import FlexibleEncoder, g_nll
+from common_nn import FlexibleEncoder
+import metrics as mcs
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -21,8 +22,8 @@ for gpu in gpu_devices:
 def train_step(model, optimizer, o_cur, o_next):
     with tf.GradientTape(persistent=True) as tape:
         z_sample, mu_o, std_o, log_sigma_o = model(o_cur)
-        # gnll = g_nll_old(mu_o, std_o, o_next)
-        gnll = g_nll(o_next, mu_o, std_o * std_o)
+        # gnll = mcs.g_nll_old(mu_o, std_o, o_next)
+        gnll = mcs.g_nll(o_next, mu_o, std_o * std_o)
         # regularization for weights
         loss_l2 = tf.add_n([tf.nn.l2_loss(var) for var in model.trainable_variables if 'W' in var.name])
         loss_l2 *= args.l2_reg
@@ -36,9 +37,9 @@ def train_step(model, optimizer, o_cur, o_next):
 @tf.function
 def eval_step(model, o_cur, o_next):
     # z_sample, mu_o, std_o = model(o_cur)
-    # gnll = g_nll_old(mu_o, std_o, o_next)
+    # gnll = mcs.g_nll_old(mu_o, std_o, o_next)
     z_sample, mu_o, std_o, log_sigma_o = model(o_cur)
-    gnll = g_nll(o_next, mu_o, std_o * std_o)
+    gnll = mcs.g_nll(o_next, mu_o, std_o * std_o)
     return gnll
     
 
