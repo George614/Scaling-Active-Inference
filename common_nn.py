@@ -20,6 +20,16 @@ def sample_k_times(k, mu, std):
     z_sample = mu_ + std_ * tf.random.normal(tf.shape(std_))
     return z_sample
 
+@tf.function
+def drop_out(input, rate=0.0, seed=69):
+    """
+        Custom drop-out function -- returns output as well as binary mask
+        @author Alex Ororbia
+    """
+    mask = tf.math.less_equal( tf.random.uniform(shape=(input.shape[0],input.shape[1]), minval=0.0, maxval=1.0, dtype=tf.float32, seed=seed),(1.0 - rate))
+    mask = tf.cast(mask, tf.float32) * (1.0 / (1.0 - rate))
+    output = input * mask
+    return output, mask
 
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
