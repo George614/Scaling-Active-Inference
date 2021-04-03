@@ -91,7 +91,7 @@ class InterceptionEnv(gym.Env):
 if __name__ == '__main__':
     print('connecting to unity environment')
     e = InterceptionEnv('interception-unity-build/InterceptionTask_Data/StreamingAssets/interception_task.json',
-                            None, False)
+                            'interception-unity-build/InterceptionTask', False)
     print()
 
     print('connected, running first simulation')
