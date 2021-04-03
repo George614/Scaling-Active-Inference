@@ -49,7 +49,30 @@ class Dense(tf.Module):
     
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
-        return tf.matmul(X, self.W) + self.b
+        z_l = tf.matmul(X, self.W) + self.b
+        return z_l
+
+class LayerNorm(tf.Module):
+    ''' 
+    Layer normalization NN layer
+    @author Alexander Ororbia
+    '''
+    def __init__(self, in_features, out_features, name=None, trainable=True):
+        super().__init__(name=name)
+        self.var_eps = 1e-12
+        self.alpha = tf.Variable(tf.zeros([1,out_features]), trainable=trainable)
+        self.beta = tf.Variable(tf.zeros([1,out_features]), trainable=trainable)
+
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
+    def __call__(self, X):
+        X_ = X
+        # apply standardization based on layer normalization
+        u = tf.reduce_mean(X_, keepdims=True)
+        s = tf.reduce_mean(tf.pow(X_ - u, 2), axis=-1, keepdims=True)
+        X_ = (X_ - u) / tf.sqrt(s + self.var_eps)
+        # apply layer normalization re-scaling
+        X_ = tf.multiply(self.alpha, X_) + self.beta # same as Hadamard product
+        return X_
 
 
 class Encoder(tf.Module):
