@@ -20,6 +20,7 @@ def sample_k_times(k, mu, std):
     z_sample = mu_ + std_ * tf.random.normal(tf.shape(std_))
     return z_sample
 
+
 @tf.function
 def drop_out(input, rate=0.0, seed=69):
     """
@@ -30,6 +31,7 @@ def drop_out(input, rate=0.0, seed=69):
     mask = tf.cast(mask, tf.float32) * (1.0 / (1.0 - rate))
     output = input * mask
     return output, mask
+
 
 @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
 def swish(x):
@@ -52,6 +54,7 @@ class Dense(tf.Module):
         z_l = tf.matmul(X, self.W) + self.b
         return z_l
 
+
 class LayerNorm(tf.Module):
     ''' 
     Layer normalization NN layer
@@ -73,6 +76,44 @@ class LayerNorm(tf.Module):
         # apply layer normalization re-scaling
         X_ = tf.multiply(self.alpha, X_) + self.beta # same as Hadamard product
         return X_
+
+
+class LayerNormalization(tf.Module):
+    ''' 
+    Layer normalization layer 
+    ref. https://arxiv.org/pdf/1607.06450.pdf
+    '''
+    def __init__(self, shape, gamma=True, beta=True, epsilon=1e-10):
+        if isinstance(shape, int):
+            normal_shape = (shape,)
+        else:
+            normal_shape = (shape[-1],)
+        self.normal_shape =normal_shape 
+        self.epsilon = epsilon
+        if gamma:
+            self.gamma = tf.ones(self.normal_shape, name="gamma")
+            self.gamma = tf.Variable(self.gamma, trainable=True)
+        if beta:
+            self.beta = tf.zeros(self.normal_shape, name="beta")
+            self.beta = tf.Variable(self.beta, trainable=True)
+
+    def reset_parameters(self):
+        if self.gamma is not None:
+            self.gamma.assign(tf.ones(self.normal_shape))
+        if self.beta is not None:
+            self.beta.assign(tf.zeros(self.normal_shape))
+
+    @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
+    def __call__(self, X):
+        mu = tf.math.reduce_mean(X, axis=-1, keepdims=True)
+        var = tf.math.reduce_mean((X - mu) * (X - mu), axis=-1, keepdims=True)
+        std = tf.math.sqrt(var + self.epsilon)
+        y = (X - mu) / std
+        if self.gamma is not None:
+            y *= self.gamma
+        if self.beta is not None:
+            y += self.beta
+        return y
 
 
 class Encoder(tf.Module):
@@ -123,17 +164,22 @@ class Encoder(tf.Module):
 class FlexibleEncoder(tf.Module):
     ''' Generic Gaussian encoder model based on Dense layer. Output mean and std as well
     as samples from the learned distribution '''
-    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu'):
+    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu', layer_norm=False):
         super().__init__(name=name)
         self.dim_z = layer_dims[-1]
         self.N = n_samples
         self.layers =[]
-        for i in range(len(layer_dims)-1):
+        for i in range(len(layer_dims) - 1):
             self.layers.append(Dense(layer_dims[i], layer_dims[i+1]))
         # add another group of neurons for mu/std in the last layer
         self.layers.append(Dense(layer_dims[-2], self.dim_z))
         self.mu = None
         self.std = None
+        self.layer_norm = tf.Variable(layer_norm, trainable=False)
+        if self.layer_norm:
+            self.norm_layers = []
+            for i in range(len(layer_dims) - 2):
+                self.norm_layers.append(LayerNormalization(layer_dims[i+1]))
         if activation == 'tanh':
             self.activation = tf.nn.tanh
         elif activation == 'relu':
@@ -147,8 +193,10 @@ class FlexibleEncoder(tf.Module):
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, x):
-        for layer in self.layers[:-2]:
-            x = layer(x)
+        for i in range(len(self.layers) - 2):
+            x = self.layers[i](x)
+            if self.layer_norm:
+                x = self.norm_layers[i](x)
             x = self.activation(x)
         mu = self.layers[-2](x)
         raw_std = self.layers[-1](x)
@@ -171,13 +219,20 @@ class FlexibleEncoder(tf.Module):
 
 class FlexibleMLP(tf.Module):
     ''' Simple multi-layer perceptron model taking layer parameters as input '''
-    def __init__(self, layer_dims, name='MLP', activation='relu6', trainable=True): # relu6, or tanh
+    def __init__(self, layer_dims, name='MLP', activation='relu6', trainable=True, layer_norm=False):
         super().__init__(name=name)
         self.layers =[]
         for i in range(len(layer_dims)-1):
             self.layers.append(Dense(layer_dims[i], layer_dims[i+1], trainable=trainable))
+        self.layer_norm = tf.Variable(layer_norm, trainable=False)
+        if self.layer_norm:
+            self.norm_layers = []
+            for i in range(len(layer_dims) - 2):
+                self.norm_layers.append(LayerNormalization(layer_dims[i+1]))
         if activation == 'tanh':
             self.activation = tf.nn.tanh
+        elif activation == 'relu':
+            self.activation = tf.nn.relu
         elif activation == 'relu6':
             self.activation = tf.nn.relu6
         elif activation == 'swish':
@@ -187,8 +242,10 @@ class FlexibleMLP(tf.Module):
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, x):
-        for layer in self.layers[:-1]:
-            x = layer(x)
+        for i in range(len(self.layers) - 1):
+            x = self.layers[i](x)
+            if self.layer_norm:
+                x = self.norm_layers[i](x)
             x = self.activation(x)
         x = self.layers[-1](x)  # linear activation for the last layer
         return x

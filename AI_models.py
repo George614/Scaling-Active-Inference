@@ -24,8 +24,8 @@ class PPLModel(tf.Module):
         # self.encoder = nn.Encoder(self.dim_obv, self.dim_z, name='Encoder')
         # self.decoder = nn.Encoder(self.dim_z, self.dim_obv, name='Decoder')
         # self.transition = nn.Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
-        self.EFEnet = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet')
-        self.EFEnet_target = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet_target', trainable=False)
+        self.EFEnet = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet', layer_norm=True)
+        self.EFEnet_target = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet_target', trainable=False, layer_norm=True)
         self.update_target()
         self.priorModel = priorModel
         self.obv_t = None
