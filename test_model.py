@@ -10,7 +10,7 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 
 import tensorflow as tf
 from utils import PARSER
-from AI_model import StateModel
+from AI_models import StateModel
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()

@@ -1,8 +1,6 @@
 import logging
 import numpy as np
-from collections import deque
 import matplotlib.pyplot as plt
-import random
 import math
 import gym
 import os
@@ -13,7 +11,8 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 import tensorflow as tf
 from datetime import datetime
 from utils import PARSER
-from AI_model import PPLModel
+from AI_models import PPLModel
+from buffers import ReplayBuffer
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -22,48 +21,33 @@ for gpu in gpu_devices:
     tf.config.experimental.set_memory_growth(gpu, True)
 
 
-class ReplayBuffer(object):
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
-    
-    def push(self, state, action, reward, next_state, done):
-        state      = np.expand_dims(state, 0)
-        next_state = np.expand_dims(next_state, 0)
-            
-        self.buffer.append((state, action, reward, next_state, done))
-    
-    def sample(self, batch_size):
-        state, action, reward, next_state, done = zip(*random.sample(self.buffer, batch_size))
-        state = np.asarray(np.concatenate(state), dtype=np.float32)
-        next_state = np.asarray(np.concatenate(next_state), dtype=np.float32)
-        action = np.asarray(action, dtype=np.int32)
-        reward = np.asarray(reward, dtype=np.float32)
-        done = np.asarray(done, dtype=bool)
-        return (state, action, reward, next_state, done)
-    
-    def __len__(self):
-        return len(self.buffer)
-
-
 if __name__ == '__main__':
     num_frames = 200000  # total number of training steps
-    num_episodes = 1000  # total number of training episodes
+    num_episodes = 2000  # total number of training episodes
     test_episodes = 5  # number of episodes for testing
     target_update_freq = 500  # in terms of steps
     target_update_ep = 2  # in terms of episodes
-    buffer_size = 50000
+    buffer_size = 100000
     batch_size = 256
     grad_norm_clip = 10.0
     log_interval = 4
     keep_expert_batch = True
+    seed = 42
+    # epsilon exponential decay schedule
     epsilon_start = 0.9
     epsilon_final = 0.02
     epsilon_decay = num_frames / 20
     epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
+    # gamma linear schedule
+    gamma_start = 0.0
+    gamma_final = 0.8
+    gamma_ep_duration = 400
+    gamma_by_episode = lambda ep_idx: gamma_start + (gamma_final - gamma_start) * np.minimum(ep_idx / gamma_ep_duration, 1.0)
+    # plot the epsilon schedule
     plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
     plt.xlabel('steps')
     plt.ylabel('epsilon')
-    plt.title("Exponential decay schedule")
+    plt.title("Exponential decay schedule for epsilon")
     plt.show()
 
     ### use tensorboard for monitoring training if needed ###
@@ -80,8 +64,11 @@ if __name__ == '__main__':
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
     opt.__setattr__('epsilon', 1e-5)
-    expert_buffer = ReplayBuffer(buffer_size)
-    replay_buffer = ReplayBuffer(buffer_size)
+    expert_buffer = ReplayBuffer(buffer_size, seed=seed)
+    replay_buffer = ReplayBuffer(buffer_size, seed=seed)
+    # set seeds
+    tf.random.set_seed(seed)
+    np.random.seed(seed)
 
     ### load and pre-process human expert-batch data ###
     # print("Human expert batch data path: ", args.prior_data_path)
@@ -130,6 +117,7 @@ if __name__ == '__main__':
     pplModel = PPLModel(priorModel, args=args)
 
     mean_ep_reward = []
+    std_ep_reward = []
     frame_idx = 0
     crash = False
     
@@ -141,6 +129,8 @@ if __name__ == '__main__':
         ### training the PPL model ###
         pplModel.training.assign(True)
         done = False
+        # gamma = gamma_by_episode(ep_idx)
+        # pplModel.gamma.assign(gamma)
         while not done:
             frame_idx += 1
             epsilon = epsilon_by_frame(frame_idx)
@@ -262,7 +252,7 @@ if __name__ == '__main__':
             #     pplModel.update_target()
 
             if frame_idx % 200 == 0:
-                print("frame {}, loss_model {}, loss_efe {}".format(frame_idx, loss_model.numpy(), loss_efe.numpy()))
+                print("frame {}, loss_model {:.3f}, loss_efe {:.3f}".format(frame_idx, loss_model.numpy(), loss_efe.numpy()))
 
         if ep_idx % target_update_ep == 0:
             pplModel.update_target()
@@ -288,8 +278,10 @@ if __name__ == '__main__':
             reward_list.append(episode_reward)
 
         mean_reward = np.mean(reward_list)
+        std_reward = np.std(reward_list)
         mean_ep_reward.append(mean_reward)
-        print("episode {}, mean reward {}".format(ep_idx+1, mean_reward))
+        std_ep_reward.append(std_reward)
+        print("episode {}, mean reward {:.3f}, std reward {:.3f}".format(ep_idx+1, mean_reward, std_reward))
         tf.summary.scalar('mean_ep_rewards', mean_ep_reward[-1], step=ep_idx+1)
 
     env.close()
@@ -299,3 +291,14 @@ if __name__ == '__main__':
         # save the PPL model
         tf.saved_model.save(pplModel, model_save_path)
         print("> Trained the PPL model. Saved in:", model_save_path)
+        # plot the mean and standard deviation of episode rewards
+        mean_ep_reward = np.asarray(mean_ep_reward)
+        std_ep_reward = np.asarray(std_ep_reward)
+        fig, ax = plt.subplots()
+        ax.plot(np.arange(len(mean_ep_reward)), mean_ep_reward, alpha=0.7, color='red', label='mean', linewidth = 0.5)
+        ax.fill_between(np.arange(len(mean_ep_reward)), np.clip(mean_ep_reward - std_ep_reward, -200, None), mean_ep_reward + std_ep_reward, color='#888888', alpha=0.4)
+        ax.legend(loc='upper left')
+        ax.set_ylabel("Rewards")
+        ax.set_xlabel("N_episode")
+        ax.set_title("Episode rewards")
+        plt.show()
