@@ -17,15 +17,17 @@ class PPLModel(tf.Module):
         self.dim_obv = args.o_size  # observation size
         self.a_size = args.a_width  # action size
         self.n_samples = args.vae_n_samples
+        self.dropout_rate = args.vae_dropout_rate
+        self.layer_norm = args.layer_norm
         self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
-        self.encoder = nn.FlexibleEncoder((self.dim_obv, 128, 128, self.dim_z), name='Encoder')
-        self.decoder = nn.FlexibleEncoder((self.dim_z, 128, 128, self.dim_obv), name='Decoder')
-        self.transition = nn.FlexibleEncoder((self.dim_z + self.a_size, 128, 128, self.dim_z), name='Transition')
+        self.encoder = nn.FlexibleEncoder((self.dim_obv, 128, 128, self.dim_z), name='Encoder', dropout_rate=self.dropout_rate)
+        self.decoder = nn.FlexibleEncoder((self.dim_z, 128, 128, self.dim_obv), name='Decoder', dropout_rate=self.dropout_rate)
+        self.transition = nn.FlexibleEncoder((self.dim_z + self.a_size, 128, 128, self.dim_z), name='Transition', dropout_rate=self.dropout_rate)
         # self.encoder = nn.Encoder(self.dim_obv, self.dim_z, name='Encoder')
         # self.decoder = nn.Encoder(self.dim_z, self.dim_obv, name='Decoder')
         # self.transition = nn.Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
-        self.EFEnet = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet', layer_norm=True)
-        self.EFEnet_target = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet_target', trainable=False, layer_norm=True)
+        self.EFEnet = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet', layer_norm=self.layer_norm)
+        self.EFEnet_target = nn.FlexibleMLP((self.dim_z, 128, 128, self.a_size), name='EFEnet_target', trainable=False, layer_norm=self.layer_norm)
         self.update_target()
         self.priorModel = priorModel
         self.obv_t = None
@@ -74,18 +76,18 @@ class PPLModel(tf.Module):
                 o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
                 
                 # Alternative: difference between preferred future and predicted future
-                R_ti = -1.0 * mcs.g_nll(o_next_hat,
-                                    o_prior_mu,
-                                    o_prior_std * o_prior_std,
-                                    keep_batch=True)
+                # R_ti = -1.0 * mcs.g_nll(o_next_hat,
+                #                     o_prior_mu,
+                #                     o_prior_std * o_prior_std,
+                #                     keep_batch=True)
                 
                 # difference between preferred future and actual future, i.e. instrumental term
                 # R_ti = -1.0 * mcs.g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
-                # R_ti = -1.0 * mcs.g_nll(obv_next,
-                #                     o_prior_mu,
-                #                     o_prior_std * o_prior_std,
-                #                     # o_prior_log_sigma,
-                #                     keep_batch=True)
+                R_ti = -1.0 * mcs.g_nll(obv_next,
+                                    o_prior_mu,
+                                    o_prior_std * o_prior_std,
+                                    # o_prior_log_sigma,
+                                    keep_batch=True)
 
                 ### negative almost KL-D between state distribution from transition model and from
                 # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###

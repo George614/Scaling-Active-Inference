@@ -164,7 +164,7 @@ class Encoder(tf.Module):
 class FlexibleEncoder(tf.Module):
     ''' Generic Gaussian encoder model based on Dense layer. Output mean and std as well
     as samples from the learned distribution '''
-    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu', layer_norm=False):
+    def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu', layer_norm=False, dropout_rate=0.0):
         super().__init__(name=name)
         self.dim_z = layer_dims[-1]
         self.N = n_samples
@@ -176,7 +176,9 @@ class FlexibleEncoder(tf.Module):
         self.mu = None
         self.std = None
         self.layer_norm = tf.Variable(layer_norm, trainable=False)
-        if self.layer_norm:
+        self.dropout_rate = tf.Variable(dropout_rate, trainable=False)
+        self.norm_layers = None
+        if tf.equal(self.layer_norm, True):
             self.norm_layers = []
             for i in range(len(layer_dims) - 2):
                 self.norm_layers.append(LayerNormalization(layer_dims[i+1]))
@@ -195,9 +197,11 @@ class FlexibleEncoder(tf.Module):
     def __call__(self, x):
         for i in range(len(self.layers) - 2):
             x = self.layers[i](x)
-            if self.layer_norm:
+            if self.norm_layers is not None:
                 x = self.norm_layers[i](x)
             x = self.activation(x)
+            if self.dropout_rate > 0:
+                x = tf.nn.dropout(x, rate=self.dropout_rate)
         mu = self.layers[-2](x)
         raw_std = self.layers[-1](x)
         # softplus is supposed to avoid numerical overflow
