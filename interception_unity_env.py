@@ -109,9 +109,8 @@ class InterceptionEnv(gym.Env):
                 for a random value. Defaults to None.
 
         Returns:
-            tuple(float, float, float, float, float): The state space after the environment has been reset. The values
+            np.ndarray[5,]: The state space after the environment has been reset. The values
                 are (target_distance, target_speed, has_changed_speed, subject_distance, subject_speed).
-                Reward values will be -1 for non-intercepted steps, and 100 for intercepted steps.
         """
         
         # Send all the parameters that are controlled per experiment or from the RNG seeded in this class.
@@ -154,9 +153,10 @@ class InterceptionEnv(gym.Env):
             action (int): a valid index in the action space, which is then mapped to the subject speed given in self.action_speed_mappings
 
         Returns:
-            tuple(tuple(float, float, float, float, float), float, bool, {}): the state space, reward, done state, and empty
+            tuple(np.ndarray[5,], float, bool, dict): the state space, reward, done state, and empty
                 diagnostic dictionary after the step is taken with the given action. The state space is the same as reset(),
-                or (target_distance, target_speed, has_changed_speed, subject_distance, subject_speed)
+                or (target_distance, target_speed, has_changed_speed, subject_distance, subject_speed).
+                Reward values will be -1 for non-intercepted steps, and 100 for intercepted steps.
         """
         assert self.action_space.contains(action), "%r (%s) invalid" % (action, type(action))
 
@@ -203,6 +203,7 @@ if __name__ == '__main__':
     while not done:
         print('state:', state)
         state, reward, done, _ = e.step(4)
+    print(type(state))
     print('state:', state)
     print('final reward:', reward)
     print()
