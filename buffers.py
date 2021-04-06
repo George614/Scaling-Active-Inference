@@ -5,7 +5,7 @@ import random
 class ReplayBuffer(object):
     def __init__(self, capacity, seed=None):
         self.buffer = deque(maxlen=capacity)
-        ramdom.seed(seed)
+        random.seed(seed)
     
     def push(self, state, action, reward, next_state, done):
         state      = np.expand_dims(state, 0)
