@@ -32,17 +32,25 @@ if __name__ == '__main__':
     grad_norm_clip = 10.0
     log_interval = 4
     keep_expert_batch = True
-    seed = 42
+    vae_reg = False
+    epistemic_anneal = True
+    seed = 44
     # epsilon exponential decay schedule
     epsilon_start = 0.9
     epsilon_final = 0.02
     epsilon_decay = num_frames / 20
     epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
     # gamma linear schedule
-    gamma_start = 0.0
-    gamma_final = 0.8
-    gamma_ep_duration = 400
+    gamma_start = 0.01
+    gamma_final = 0.99
+    gamma_ep_duration = 300
     gamma_by_episode = lambda ep_idx: gamma_start + (gamma_final - gamma_start) * np.minimum(ep_idx / gamma_ep_duration, 1.0)
+    # rho (weight on epistemic term) linear schedule
+    anneal_start_reward = -180
+    rho_start = 1.0
+    rho_final = 0.1
+    rho_ep_duration = 300
+    rho_by_episode = lambda ep_idx: rho_start + (rho_final - rho_start) * np.minimum(ep_idx / rho_ep_duration, 1.0)
     # plot the epsilon schedule
     plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
     plt.xlabel('steps')
@@ -120,17 +128,20 @@ if __name__ == '__main__':
     std_ep_reward = []
     frame_idx = 0
     crash = False
+    rho_anneal_start = False
     
     env = gym.make(args.env_name)
     observation = env.reset()
 
-    # for frame_idx in range(1, num_frames + 1):
-    for ep_idx in range(num_episodes):
+    # for frame_idx in range(1, num_frames + 1): # deprecated
+    for ep_idx in range(num_episodes):  # training using episode as cycle
         ### training the PPL model ###
         pplModel.training.assign(True)
         done = False
-        # gamma = gamma_by_episode(ep_idx)
-        # pplModel.gamma.assign(gamma)
+        ## linear schedule for VAE model regularization
+        if vae_reg:
+            gamma = gamma_by_episode(ep_idx)
+            pplModel.gamma.assign(gamma)
         while not done:
             frame_idx += 1
             epsilon = epsilon_by_frame(frame_idx)
@@ -283,6 +294,15 @@ if __name__ == '__main__':
         std_ep_reward.append(std_reward)
         print("episode {}, mean reward {:.3f}, std reward {:.3f}".format(ep_idx+1, mean_reward, std_reward))
         tf.summary.scalar('mean_ep_rewards', mean_ep_reward[-1], step=ep_idx+1)
+
+        # annealing of the epistemic term based on the average test rewards
+        if epistemic_anneal:
+            if not rho_anneal_start and mean_reward > anneal_start_reward:
+                start_ep = ep_idx
+                rho_anneal_start = True
+            if rho_anneal_start:
+                rho = rho_by_episode(ep_idx - start_ep)
+                pplModel.rho.assign(rho)
 
     env.close()
     if crash:

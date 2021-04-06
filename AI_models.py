@@ -36,6 +36,7 @@ class PPLModel(tf.Module):
         self.training = tf.Variable(True, trainable=False) # training mode
         self.l2_reg = args.l2_reg
         self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
+        self.rho = tf.Variable(1.0, trainable=False)  # weight term on the epistemic value
 
     @tf.function
     def act(self, obv_t):
@@ -113,7 +114,7 @@ class PPLModel(tf.Module):
                 R_te = tf.clip_by_value(R_te, -50.0, 50.0)
 
                 # the nagative EFE value, i.e. the reward. Note the sign here
-                R_t = R_ti + R_te
+                R_t = R_ti + self.rho * R_te
 
             ## model reconstruction loss ##
             loss_reconst = mcs.g_nll(obv_next, o_next_mu, o_next_std * o_next_std) #, o_next_log_sigma)
@@ -153,9 +154,9 @@ class PPLModel(tf.Module):
             ## TD loss ##
             done = tf.cast(done, dtype=tf.float32)
             # Alternative: use Huber loss instead of MSE loss
-            # loss_efe = mcs.huber(efe_old, (R_t + efe_new * (1 - done)))
+            loss_efe = mcs.huber(efe_old, (R_t + efe_new * (1 - done)))
             # use MSE loss for the TD error
-            loss_efe = mcs.mse(efe_old, (R_t + efe_new * (1 - done)))
+            # loss_efe = mcs.mse(efe_old, (R_t + efe_new * (1 - done)))
 
         # calculate gradient w.r.t model reconstruction and TD respectively
         grads_model = tape.gradient(loss_model, self.trainable_variables)
