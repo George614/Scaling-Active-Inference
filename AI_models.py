@@ -20,9 +20,9 @@ class PPLModel(tf.Module):
         self.dropout_rate = args.vae_dropout_rate
         self.layer_norm = args.layer_norm
         self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
-        self.encoder = nn.FlexibleEncoder((self.dim_obv, 128, 128, self.dim_z), name='Encoder', dropout_rate=self.dropout_rate)
-        self.decoder = nn.FlexibleEncoder((self.dim_z, 128, 128, self.dim_obv), name='Decoder', dropout_rate=self.dropout_rate)
-        self.transition = nn.FlexibleEncoder((self.dim_z + self.a_size, 128, 128, self.dim_z), name='Transition', dropout_rate=self.dropout_rate)
+        self.encoder = nn.FlexibleEncoder((self.dim_obv, 128, 128, self.dim_z), name='Encoder', dropout_rate=self.dropout_rate, layer_norm=False)
+        self.decoder = nn.FlexibleEncoder((self.dim_z, 128, 128, self.dim_obv), name='Decoder', dropout_rate=self.dropout_rate, layer_norm=False)
+        self.transition = nn.FlexibleEncoder((self.dim_z + self.a_size, 128, 128, self.dim_z), name='Transition', dropout_rate=self.dropout_rate, layer_norm=False)
         # self.encoder = nn.Encoder(self.dim_obv, self.dim_z, name='Encoder')
         # self.decoder = nn.Encoder(self.dim_z, self.dim_obv, name='Decoder')
         # self.transition = nn.Encoder(self.dim_z + self.a_size, self.dim_z, name='Transition')
@@ -36,7 +36,7 @@ class PPLModel(tf.Module):
         self.training = tf.Variable(True, trainable=False) # training mode
         self.l2_reg = args.l2_reg
         self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
-        self.rho = tf.Variable(1.0, trainable=False)  # weight term on the epistemic value
+        self.rho = tf.Variable(0.0, trainable=False)  # weight term on the epistemic value
 
     @tf.function
     def act(self, obv_t):
@@ -56,7 +56,7 @@ class PPLModel(tf.Module):
             target_var.assign(var)
 
     @tf.function
-    def train_step(self, obv_t, obv_next, action, done):
+    def train_step(self, obv_t, obv_next, action, done, weights=None):
         with tf.GradientTape(persistent=True) as tape:
             ### run s_t and a_t through the PPL model ###
             states, state_mu, state_std = self.encoder(obv_t)
@@ -154,14 +154,23 @@ class PPLModel(tf.Module):
             ## TD loss ##
             done = tf.cast(done, dtype=tf.float32)
             # Alternative: use Huber loss instead of MSE loss
-            loss_efe = mcs.huber(efe_old, (R_t + efe_new * (1 - done)))
+            if weights is not None:
+                loss_efe_batch = mcs.huber_keep_batch(efe_old, (R_t + efe_new * (1 - done)))
+                loss_efe_batch *= weights
+                priorities = loss_efe_batch + 1e-5
+                loss_efe = tf.math.reduce_mean(loss_efe_batch)
+            else:
+                loss_efe = mcs.huber(efe_old, (R_t + efe_new * (1 - done)))
             # use MSE loss for the TD error
             # loss_efe = mcs.mse(efe_old, (R_t + efe_new * (1 - done)))
 
         # calculate gradient w.r.t model reconstruction and TD respectively
         grads_model = tape.gradient(loss_model, self.trainable_variables)
         grads_efe = tape.gradient(loss_efe, self.trainable_variables)
-
+        
+        if weights is not None:
+            return grads_efe, grads_model, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target, priorities
+        
         return grads_efe, grads_model, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target
 
 

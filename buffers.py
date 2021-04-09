@@ -3,6 +3,10 @@ import numpy as np
 import random
 
 class ReplayBuffer(object):
+    '''
+    Vanilla Experience Replay Buffer
+    Ref: https://github.com/higgsfield/RL-Adventure
+    '''
     def __init__(self, capacity, seed=None):
         self.buffer = deque(maxlen=capacity)
         random.seed(seed)
@@ -27,6 +31,10 @@ class ReplayBuffer(object):
 
 
 class NaivePrioritizedBuffer(object):
+    '''
+    Prioritized Experience Replay Buffer
+    Ref: https://github.com/higgsfield/RL-Adventure
+    '''
     def __init__(self, capacity, prob_alpha=0.6):
         self.prob_alpha = prob_alpha
         self.capacity   = capacity
@@ -66,14 +74,14 @@ class NaivePrioritizedBuffer(object):
         weights /= weights.max()
         weights  = np.array(weights, dtype=np.float32)
         
-        batch       = zip(*samples)
-        states      = np.concatenate(batch[0])
-        actions     = batch[1]
-        rewards     = batch[2]
-        next_states = np.concatenate(batch[3])
-        dones       = batch[4]
+        batch       = list(zip(*samples))
+        states      = np.asarray(np.concatenate(batch[0]), dtype=np.float32)
+        actions     = np.asarray(batch[1], dtype=np.int32)
+        rewards     = np.asarray(batch[2], dtype=np.float32)
+        next_states = np.asarray(np.concatenate(batch[3]), dtype=np.float32)
+        dones       = np.asarray(batch[4], dtype=bool)
         
-        return states, actions, rewards, next_states, dones, indices, weights
+        return (states, actions, rewards, next_states, dones, indices, weights)
     
     def update_priorities(self, batch_indices, batch_priorities):
         for idx, prio in zip(batch_indices, batch_priorities):

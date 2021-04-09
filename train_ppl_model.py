@@ -12,7 +12,8 @@ import tensorflow as tf
 from datetime import datetime
 from utils import PARSER
 from AI_models import PPLModel
-from buffers import ReplayBuffer
+from buffers import ReplayBuffer, NaivePrioritizedBuffer
+from scheduler import Linear_schedule, Exponential_schedule
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -28,29 +29,36 @@ if __name__ == '__main__':
     target_update_freq = 500  # in terms of steps
     target_update_ep = 2  # in terms of episodes
     buffer_size = 100000
+    prob_alpha = 0.6
     batch_size = 256
     grad_norm_clip = 10.0
     log_interval = 4
     keep_expert_batch = True
+    use_per_buffer = True
     vae_reg = False
-    epistemic_anneal = True
+    epistemic_anneal = False
     seed = 44
     # epsilon exponential decay schedule
     epsilon_start = 0.9
     epsilon_final = 0.02
     epsilon_decay = num_frames / 20
-    epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
-    # gamma linear schedule
+    epsilon_by_frame = Exponential_schedule(epsilon_start, epsilon_final, epsilon_decay)
+    # gamma linear schedule for VAE regularization
     gamma_start = 0.01
     gamma_final = 0.99
     gamma_ep_duration = 300
-    gamma_by_episode = lambda ep_idx: gamma_start + (gamma_final - gamma_start) * np.minimum(ep_idx / gamma_ep_duration, 1.0)
-    # rho (weight on epistemic term) linear schedule
+    gamma_by_episode = Linear_schedule(gamma_start, gamma_final, gamma_ep_duration)
+    # rho linear schedule for annealing epistemic term
     anneal_start_reward = -180
     rho_start = 1.0
-    rho_final = 0.1
+    rho_final = 0.0
     rho_ep_duration = 300
-    rho_by_episode = lambda ep_idx: rho_start + (rho_final - rho_start) * np.minimum(ep_idx / rho_ep_duration, 1.0)
+    rho_by_episode = Linear_schedule(rho_start, rho_final, rho_ep_duration)
+    # beta linear schedule for prioritized experience replay
+    beta_start = 0.4
+    beta_final = 1.0
+    beta_ep_duration = 600
+    beta_by_episode = Linear_schedule(beta_start, beta_final, beta_ep_duration)
     # plot the epsilon schedule
     plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
     plt.xlabel('steps')
@@ -72,8 +80,12 @@ if __name__ == '__main__':
     opt = tf.keras.optimizers.get(args.vae_optimizer)
     opt.__setattr__('learning_rate', args.vae_learning_rate)
     opt.__setattr__('epsilon', 1e-5)
-    expert_buffer = ReplayBuffer(buffer_size, seed=seed)
-    replay_buffer = ReplayBuffer(buffer_size, seed=seed)
+    if use_per_buffer:
+        per_buffer = NaivePrioritizedBuffer(buffer_size * 2, prob_alpha=prob_alpha)
+    else:
+        expert_buffer = ReplayBuffer(buffer_size, seed=seed)
+        replay_buffer = ReplayBuffer(buffer_size, seed=seed)
+    
     # set seeds
     tf.random.set_seed(seed)
     np.random.seed(seed)
@@ -112,9 +124,12 @@ if __name__ == '__main__':
 
     for i in range(min(len(all_data), buffer_size)):
         o_t, action, reward, o_tp1, done = all_data[i, :2], all_data[i, 2], all_data[i, 3], all_data[i, 4:6], all_data[i, 6]
-        expert_buffer.push(o_t, action, reward, o_tp1, done)
+        if use_per_buffer:
+            per_buffer.push(o_t, action, reward, o_tp1, done)
+        else:
+            expert_buffer.push(o_t, action, reward, o_tp1, done)
 
-    if not keep_expert_batch:
+    if not keep_expert_batch and not use_per_buffer:
         replay_buffer = expert_buffer
 
     ### load the prior preference model ###
@@ -142,6 +157,8 @@ if __name__ == '__main__':
         if vae_reg:
             gamma = gamma_by_episode(ep_idx)
             pplModel.gamma.assign(gamma)
+        if use_per_buffer:
+            beta = beta_by_episode(ep_idx)
         while not done:
             frame_idx += 1
             epsilon = epsilon_by_frame(frame_idx)
@@ -154,35 +171,44 @@ if __name__ == '__main__':
             action = action.numpy().squeeze()
 
             next_obv, reward, done, _ = env.step(action)
-            replay_buffer.push(observation, action, reward, next_obv, done)
             
-            observation = next_obv
-
-            if keep_expert_batch:
-                total_samples = len(expert_buffer) + len(replay_buffer)
-                if total_samples / len(replay_buffer) < batch_size:
-                    # sample from both expert buffer and replay buffer
-                    n_replay_samples = np.floor(batch_size * len(replay_buffer) / total_samples)
-                    n_expert_samples = batch_size - n_replay_samples
-                # if len(replay_buffer) < batch_size // 2:
-                #     continue
-                # else:
-                    # sample equal number of samples from expert buffer and replay buffer
-                    # n_expert_samples = batch_size // 2
-                    # n_replay_samples = batch_size // 2
-                    expert_batch = expert_buffer.sample(int(n_expert_samples))
-                    replay_batch = replay_buffer.sample(int(n_replay_samples))
-                    batch_data = [np.concatenate((expert_sample, replay_sample)) for expert_sample, replay_sample in zip(expert_batch, replay_batch)]
-                else:
-                    # sample from expert buffer only
-                    batch_data = expert_buffer.sample(batch_size)
+            if use_per_buffer:
+                per_buffer.push(observation, action, reward, next_obv, done)
+                observation = next_obv
+                batch_data = per_buffer.sample(batch_size, beta=beta)
+                [batch_obv, batch_action, batch_reward, batch_next_obv, batch_done, batch_indices, batch_weights] = batch_data
+                batch_action = tf.one_hot(batch_action, depth=args.a_width)
+                grads_efe, grads_model, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target, priorities = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done, batch_weights)
+                per_buffer.update_priorities(batch_indices, priorities.numpy())
             else:
-                batch_data = replay_buffer.sample(batch_size)
+                replay_buffer.push(observation, action, reward, next_obv, done)
+                observation = next_obv
 
-            [batch_obv, batch_action, batch_reward, batch_next_obv, batch_done] = batch_data
-            
-            batch_action = tf.one_hot(batch_action, depth=args.a_width)
-            grads_efe, grads_model, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done)
+                if keep_expert_batch:
+                    total_samples = len(expert_buffer) + len(replay_buffer)
+                    if total_samples / len(replay_buffer) < batch_size:
+                        # sample from both expert buffer and replay buffer
+                        n_replay_samples = np.floor(batch_size * len(replay_buffer) / total_samples)
+                        n_expert_samples = batch_size - n_replay_samples
+                    # if len(replay_buffer) < batch_size // 2:
+                    #     continue
+                    # else:
+                        # sample equal number of samples from expert buffer and replay buffer
+                        # n_expert_samples = batch_size // 2
+                        # n_replay_samples = batch_size // 2
+                        expert_batch = expert_buffer.sample(int(n_expert_samples))
+                        replay_batch = replay_buffer.sample(int(n_replay_samples))
+                        batch_data = [np.concatenate((expert_sample, replay_sample)) for expert_sample, replay_sample in zip(expert_batch, replay_batch)]
+                    else:
+                        # sample from expert buffer only
+                        batch_data = expert_buffer.sample(batch_size)
+                else:
+                    batch_data = replay_buffer.sample(batch_size)
+
+                [batch_obv, batch_action, batch_reward, batch_next_obv, batch_done] = batch_data
+                
+                batch_action = tf.one_hot(batch_action, depth=args.a_width)
+                grads_efe, grads_model, loss_efe, loss_model, loss_l2, R_ti, R_te, efe_t, efe_target = pplModel.train_step(batch_obv, batch_next_obv, batch_action, batch_done)
             
             if tf.math.is_nan(loss_efe):
                 print("loss_efe nan at frame #", frame_idx)

@@ -117,3 +117,4 @@ def g_nll_old(mu, std, x_true, keep_batch=False):
 
 
 huber = tf.keras.losses.Huber()
+huber_keep_batch = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.NONE)
