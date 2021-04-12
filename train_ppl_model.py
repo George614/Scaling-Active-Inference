@@ -36,8 +36,8 @@ if __name__ == '__main__':
     keep_expert_batch = True
     use_per_buffer = True
     vae_reg = False
-    epistemic_anneal = False
-    seed = 44
+    epistemic_anneal = True
+    seed = args.seed
     # epsilon exponential decay schedule
     epsilon_start = 0.9
     epsilon_final = 0.02
@@ -46,25 +46,25 @@ if __name__ == '__main__':
     # gamma linear schedule for VAE regularization
     gamma_start = 0.01
     gamma_final = 0.99
-    gamma_ep_duration = 300
+    gamma_ep_duration = 200
     gamma_by_episode = Linear_schedule(gamma_start, gamma_final, gamma_ep_duration)
     # rho linear schedule for annealing epistemic term
     anneal_start_reward = -180
     rho_start = 1.0
-    rho_final = 0.0
-    rho_ep_duration = 300
+    rho_final = 0.1
+    rho_ep_duration = 200
     rho_by_episode = Linear_schedule(rho_start, rho_final, rho_ep_duration)
     # beta linear schedule for prioritized experience replay
     beta_start = 0.4
     beta_final = 1.0
-    beta_ep_duration = 600
+    beta_ep_duration = 400
     beta_by_episode = Linear_schedule(beta_start, beta_final, beta_ep_duration)
-    # plot the epsilon schedule
-    plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
-    plt.xlabel('steps')
-    plt.ylabel('epsilon')
-    plt.title("Exponential decay schedule for epsilon")
-    plt.show()
+    # # plot the epsilon schedule
+    # plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
+    # plt.xlabel('steps')
+    # plt.ylabel('epsilon')
+    # plt.title("Exponential decay schedule for epsilon")
+    # plt.show()
 
     ### use tensorboard for monitoring training if needed ###
     now = datetime.now()

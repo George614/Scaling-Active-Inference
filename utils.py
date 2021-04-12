@@ -16,6 +16,7 @@ PARSER.add('--n_actions', required=True, type=int, help='number of discrete acti
 PARSER.add('--a_width', required=True, type=int, help='width of action vector')
 PARSER.add('--o_size', required=True, type=int, help='observation size')
 PARSER.add('--z_size', required=True, type=int, help='hidden state size')
+PARSER.add('--seed', required=True, type=int, help='random seed for a single experiment')
 PARSER.add('--data_path', required=True, type=str, help='path to the training data', default='./')
 PARSER.add('--prior_data_path', required=True, type=str, help='path to the human data for the PPL', default='./')
 PARSER.add('--zoo_data_path', required=True, type=str, help='path to the zoo agent data for the PPL', default='./')
