@@ -35,6 +35,7 @@ class PPLModel(tf.Module):
         self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
         self.training = tf.Variable(True, trainable=False) # training mode
         self.is_stateful = args.is_stateful  # whether the model maintain a hidden state
+        self.double_q = args.double_q  # use double-Q learning or not
         self.z_state = None
         self.l2_reg = args.l2_reg
         self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
@@ -162,7 +163,10 @@ class PPLModel(tf.Module):
             with tape.stop_recording():
                 # EFE values for next state, s_t+1 is from transition model instead of encoder
                 efe_target = self.EFEnet_target(states_next_tran)
-                idx_a_next = tf.math.argmax(efe_target, axis=-1, output_type=tf.dtypes.int32)
+                if self.double_q:
+                    idx_a_next = tf.math.argmax(efe_t, axis=-1, output_type=tf.dtypes.int32)
+                else:
+                    idx_a_next = tf.math.argmax(efe_target, axis=-1, output_type=tf.dtypes.int32)
                 onehot_a_next = tf.one_hot(idx_a_next, depth=self.a_size)
                 # take the new EFE values
                 efe_new = tf.math.reduce_sum(efe_target * onehot_a_next, axis=-1)

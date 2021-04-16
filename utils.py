@@ -11,6 +11,7 @@ PARSER.add('--buffer_size', required=True, type=int, help='buffer size for cachi
 PARSER.add_argument('--layer_norm', dest='layer_norm', action='store_true', help='apply layer normalization')
 PARSER.add_argument('--no_layer_norm', dest='layer_norm', action='store_false', help='turn off layer normalization')
 PARSER.add_argument('--is_stateful', dest='is_stateful', action='store_true', help='maintain states when acting in the env')
+PARSER.add_argument('--double_q', dest='double_q', action='store_true', help='if double-Q is used')
 PARSER.add_argument('--render_mode', dest='render_mode', action='store_true')
 PARSER.add_argument('--no_render_mode', dest='render_mode', action='store_false')
 PARSER.add('--n_actions', required=True, type=int, help='number of discrete actions agent can take')
@@ -43,3 +44,4 @@ PARSER.add_argument('--planner_no_full_efe', dest='planner_full_efe', action='st
 PARSER.set_defaults(render_mode=True)
 PARSER.set_defaults(layer_norm=False)
 PARSER.set_defaults(is_stateful=False)
+PARSER.set_defaults(double_q=False)
