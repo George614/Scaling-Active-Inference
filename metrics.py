@@ -116,5 +116,14 @@ def g_nll_old(mu, std, x_true, keep_batch=False):
     return nll
 
 
-huber = tf.keras.losses.Huber()
-huber_keep_batch = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.NONE)
+@tf.function
+def huber(y_true, y_pred, delta=1.0, keep_batch=False):
+    error = y_true - y_pred
+    within_d = tf.math.less_equal(tf.abs(error), delta)
+    within_d = tf.cast(within_d, dtype=tf.float32)
+    loss_in = 0.5 * error * error
+    loss_out = 0.5 * delta * delta + delta * (tf.abs(error) - delta)
+    loss = within_d * loss_in + (1 - within_d) * loss_out
+    if keep_batch:
+        return loss
+    return tf.math.reduce_mean(loss, axis=0)

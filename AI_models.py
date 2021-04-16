@@ -34,22 +34,38 @@ class PPLModel(tf.Module):
         self.a_t = None
         self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
         self.training = tf.Variable(True, trainable=False) # training mode
+        self.is_stateful = args.is_stateful  # whether the model maintain a hidden state
+        self.z_state = None
         self.l2_reg = args.l2_reg
         self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
         self.rho = tf.Variable(0.0, trainable=False)  # weight term on the epistemic value
 
     @tf.function
     def act(self, obv_t):
+        if self.is_stateful and self.z_state is None:
+            state, _, _ = self.encoder(obv_t)
+            self.z_state = tf.identity(state)
+        
         if tf.random.uniform(shape=()) > self.epsilon:
             # action selection using o_t and EFE network
-            states, _, _ = self.encoder(obv_t)
+            if not self.is_stateful:
+                states, _, _ = self.encoder(obv_t)
+            else:
+                states = self.z_state
             efe_t = self.EFEnet(states)
             action = tf.argmax(efe_t, axis=-1, output_type=tf.int32)
         else:
-            action = tf.random.uniform(shape=(), maxval=self.a_size, dtype=tf.int32)
+            action = tf.random.uniform(shape=(1,), maxval=self.a_size, dtype=tf.int32)
+
+        if self.is_stateful:
+            a_t = tf.one_hot(action, depth=self.a_size)
+            state_next, _, _ = self.transition(tf.concat([self.z_state, a_t], axis=-1))
+            self.z_state = tf.identity(state_next)
 
         return action
 
+    def clear_state(self):
+        self.z_state = None
 
     def update_target(self):
         for target_var, var in zip(self.EFEnet_target.variables, self.EFEnet.variables):
@@ -155,9 +171,9 @@ class PPLModel(tf.Module):
             done = tf.cast(done, dtype=tf.float32)
             # Alternative: use Huber loss instead of MSE loss
             if weights is not None:
-                loss_efe_batch = mcs.huber_keep_batch(efe_old, (R_t + efe_new * (1 - done)))
+                loss_efe_batch = mcs.huber(efe_old, (R_t + efe_new * (1 - done)), keep_batch=True)
+                priorities = tf.math.abs(loss_efe_batch + 1e-5)
                 loss_efe_batch *= weights
-                priorities = loss_efe_batch + 1e-5
                 loss_efe = tf.math.reduce_mean(loss_efe_batch)
             else:
                 loss_efe = mcs.huber(efe_old, (R_t + efe_new * (1 - done)))

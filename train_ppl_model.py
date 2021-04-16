@@ -29,7 +29,7 @@ if __name__ == '__main__':
     target_update_freq = 500  # in terms of steps
     target_update_ep = 2  # in terms of episodes
     buffer_size = 100000
-    prob_alpha = 0.6
+    prob_alpha = 0.6  # power value used in the PER
     batch_size = 256
     grad_norm_clip = 10.0
     log_interval = 4
@@ -37,6 +37,7 @@ if __name__ == '__main__':
     use_per_buffer = True
     vae_reg = False
     epistemic_anneal = True
+    is_stateful = args.is_stateful
     seed = args.seed
     # epsilon exponential decay schedule
     epsilon_start = 0.9
@@ -296,6 +297,8 @@ if __name__ == '__main__':
 
         ### after each training episode is done ###
         observation = env.reset()
+        if is_stateful:
+            pplModel.clear_state()
 
         ### evaluate the PPL model using a number of episodes ###
         pplModel.training.assign(False)
@@ -312,6 +315,8 @@ if __name__ == '__main__':
                 observation, reward, done_test, _ = env.step(action)
                 episode_reward += reward
             observation = env.reset()
+            if is_stateful:
+                pplModel.clear_state()
             reward_list.append(episode_reward)
 
         mean_reward = np.mean(reward_list)
