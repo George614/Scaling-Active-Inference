@@ -124,6 +124,8 @@ def huber(y_true, y_pred, delta=1.0, keep_batch=False):
     loss_in = 0.5 * error * error
     loss_out = 0.5 * delta * delta + delta * (tf.abs(error) - delta)
     loss = within_d * loss_in + (1 - within_d) * loss_out
+    if tf.greater(tf.rank(loss), 1):
+        loss = tf.reduce_sum(loss, axis=-1)
     if keep_batch:
         return loss
     return tf.math.reduce_mean(loss, axis=0)

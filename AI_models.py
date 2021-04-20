@@ -36,10 +36,12 @@ class PPLModel(tf.Module):
         self.training = tf.Variable(True, trainable=False) # training mode
         self.is_stateful = args.is_stateful  # whether the model maintain a hidden state
         self.double_q = args.double_q  # use double-Q learning or not
+        self.use_sum_q = False  # whether to use the summation form of Q-learning
         self.z_state = None
         self.l2_reg = args.l2_reg
         self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
         self.rho = tf.Variable(0.0, trainable=False)  # weight term on the epistemic value
+        self.gamma_d = tf.Variable(0.99, trainable=False)  # discount factor in Bellman equation
 
     @tf.function
     def act(self, obv_t):
@@ -157,30 +159,48 @@ class PPLModel(tf.Module):
 
             loss_model = loss_reconst + self.gamma * loss_latent + (1 - self.gamma) * loss_latent_reg + loss_l2
 
-            # take the old EFE values given action indices
-            efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
-
-            with tape.stop_recording():
-                # EFE values for next state, s_t+1 is from transition model instead of encoder
-                efe_target = self.EFEnet_target(states_next_tran)
-                if self.double_q:
-                    idx_a_next = tf.math.argmax(efe_t, axis=-1, output_type=tf.dtypes.int32)
-                else:
-                    idx_a_next = tf.math.argmax(efe_target, axis=-1, output_type=tf.dtypes.int32)
-                onehot_a_next = tf.one_hot(idx_a_next, depth=self.a_size)
-                # take the new EFE values
-                efe_new = tf.math.reduce_sum(efe_target * onehot_a_next, axis=-1)
+            done = tf.expand_dims(tf.cast(done, dtype=tf.float32), axis=1)
+            if self.use_sum_q:
+                # take the old EFE values given action indices
+                efe_old = tf.math.reduce_sum(efe_t * action, axis=-1)
+                with tape.stop_recording():
+                    # EFE values for next state, s_t+1 is from transition model instead of encoder
+                    efe_target = self.EFEnet_target(states_next_tran)
+                    if self.double_q:
+                        idx_a_next = tf.math.argmax(efe_t, axis=-1, output_type=tf.dtypes.int32)
+                    else:
+                        idx_a_next = tf.math.argmax(efe_target, axis=-1, output_type=tf.dtypes.int32)
+                    onehot_a_next = tf.one_hot(idx_a_next, depth=self.a_size)
+                    # take the new EFE values
+                    efe_new = tf.math.reduce_sum(efe_target * onehot_a_next, axis=-1)
+                    y_j = R_t + (efe_new * self.gamma_d) * (1.0 - done)
+            else:
+                efe_old = efe_t
+                with tape.stop_recording():
+                    # EFE values for next state, s_t+1 is from transition model instead of encoder
+                    efe_target = self.EFEnet_target(states_next_tran)
+                    if self.double_q:
+                        idx_a_next = tf.math.argmax(efe_t, axis=-1, output_type=tf.dtypes.int32)
+                        idx_batch = tf.range(tf.shape(idx_a_next)[0])
+                        idx_a_next = tf.stack((idx_batch, idx_a_next), axis=-1)
+                        efe_new = tf.gather_nd(efe_target, idx_a_next)
+                        efe_new = tf.expand_dims(efe_new, axis=1)
+                    else:
+                        efe_new =  tf.expand_dims(tf.reduce_max(efe_target, axis=1), axis=1)
+                    R_t = tf.expand_dims(R_t, axis=1)
+                    y_j = R_t + (efe_new * self.gamma_d) * (1.0 - done)
+                    y_j = (action * y_j) + (efe_old * (1.0 - action))
 
             ## TD loss ##
-            done = tf.cast(done, dtype=tf.float32)
             # Alternative: use Huber loss instead of MSE loss
             if weights is not None:
-                loss_efe_batch = mcs.huber(efe_old, (R_t + efe_new * (1 - done)), keep_batch=True)
-                priorities = tf.math.abs(loss_efe_batch + 1e-5)
+                loss_efe_batch = mcs.huber(efe_old, y_j, keep_batch=True)
+                priorities = tf.math.abs(loss_efe_batch) + 1e-5
+                loss_efe_batch = tf.squeeze(loss_efe_batch)
                 loss_efe_batch *= weights
                 loss_efe = tf.math.reduce_mean(loss_efe_batch)
             else:
-                loss_efe = mcs.huber(efe_old, (R_t + efe_new * (1 - done)))
+                loss_efe = mcs.huber(efe_old, y_j)
             # use MSE loss for the TD error
             # loss_efe = mcs.mse(efe_old, (R_t + efe_new * (1 - done)))
 
