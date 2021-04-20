@@ -27,6 +27,7 @@ PARSER.add('--human_data_path', required=True, type=str, help='path to the human
 PARSER.add('--vae_batch_size', required=True, type=int, help='batch size for vae train')
 PARSER.add('--vae_n_samples', default=1, type=int, help='number of samples draw from the models')
 PARSER.add('--vae_learning_rate', required=True, type=float, help='vae learning rate')
+PARSER.add('--vae_weight_decay', required=True, type=float, help='vae decoupled weight decay factor')
 PARSER.add('--vae_kl_weight', required=True, type=float, help='vae kl-d weight')
 PARSER.add('--vae_kl_regularize_weight', required=True, type=float, help='vae kl-d regularizer weight')
 PARSER.add('--vae_num_epoch', required=True, type=int, help='vae num epoch for training')

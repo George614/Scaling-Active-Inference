@@ -78,9 +78,13 @@ if __name__ == '__main__':
     summary_writer.set_as_default()
 
     ### initialize optimizer and buffers ###
-    opt = tf.keras.optimizers.get(args.vae_optimizer)
-    opt.__setattr__('learning_rate', args.vae_learning_rate)
-    opt.__setattr__('epsilon', 1e-5)
+    if args.vae_optimizer == "AdamW":
+        import tensorflow_addons as tfa
+        opt = tfa.optimizers.AdamW(learning_rate=args.vae_learning_rate, weight_decay=args.vae_weight_decay)
+    else:
+        opt = tf.keras.optimizers.get(args.vae_optimizer)
+        opt.__setattr__('learning_rate', args.vae_learning_rate)
+        opt.__setattr__('epsilon', 1e-5)
     if use_per_buffer:
         per_buffer = NaivePrioritizedBuffer(buffer_size * 2, prob_alpha=prob_alpha)
     else:
