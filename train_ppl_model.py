@@ -25,7 +25,7 @@ for gpu in gpu_devices:
 if __name__ == '__main__':
     num_frames = 200000  # total number of training steps
     num_episodes = 2000  # total number of training episodes
-    test_episodes = 5  # number of episodes for testing
+    test_episodes = 1  # number of episodes for testing
     target_update_freq = 500  # in terms of steps
     target_update_ep = 2  # in terms of episodes
     buffer_size = 100000
@@ -37,6 +37,8 @@ if __name__ == '__main__':
     use_per_buffer = True
     vae_reg = False
     epistemic_anneal = True
+    plot_eps_schedule = False
+    plot_rewards = False
     is_stateful = args.is_stateful
     seed = args.seed
     # epsilon exponential decay schedule
@@ -60,12 +62,13 @@ if __name__ == '__main__':
     beta_final = 1.0
     beta_ep_duration = 400
     beta_by_episode = Linear_schedule(beta_start, beta_final, beta_ep_duration)
-    # # plot the epsilon schedule
-    # plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
-    # plt.xlabel('steps')
-    # plt.ylabel('epsilon')
-    # plt.title("Exponential decay schedule for epsilon")
-    # plt.show()
+    if plot_eps_schedule:
+        # plot the epsilon schedule
+        plt.plot([epsilon_by_frame(i) for i in range(num_frames)])
+        plt.xlabel('steps')
+        plt.ylabel('epsilon')
+        plt.title("Exponential decay schedule for epsilon")
+        plt.show()
 
     ### use tensorboard for monitoring training if needed ###
     now = datetime.now()
@@ -80,7 +83,7 @@ if __name__ == '__main__':
     ### initialize optimizer and buffers ###
     if args.vae_optimizer == "AdamW":
         import tensorflow_addons as tfa
-        opt = tfa.optimizers.AdamW(learning_rate=args.vae_learning_rate, weight_decay=args.vae_weight_decay)
+        opt = tfa.optimizers.AdamW(learning_rate=args.vae_learning_rate, weight_decay=args.vae_weight_decay, epsilon=1e-5)
     else:
         opt = tf.keras.optimizers.get(args.vae_optimizer)
         opt.__setattr__('learning_rate', args.vae_learning_rate)
@@ -346,14 +349,15 @@ if __name__ == '__main__':
         # save the PPL model
         tf.saved_model.save(pplModel, model_save_path)
         print("> Trained the PPL model. Saved in:", model_save_path)
-        # plot the mean and standard deviation of episode rewards
-        mean_ep_reward = np.asarray(mean_ep_reward)
-        std_ep_reward = np.asarray(std_ep_reward)
-        fig, ax = plt.subplots()
-        ax.plot(np.arange(len(mean_ep_reward)), mean_ep_reward, alpha=0.7, color='red', label='mean', linewidth = 0.5)
-        ax.fill_between(np.arange(len(mean_ep_reward)), np.clip(mean_ep_reward - std_ep_reward, -200, None), mean_ep_reward + std_ep_reward, color='#888888', alpha=0.4)
-        ax.legend(loc='upper left')
-        ax.set_ylabel("Rewards")
-        ax.set_xlabel("N_episode")
-        ax.set_title("Episode rewards")
-        plt.show()
+        if plot_rewards:
+            # plot the mean and standard deviation of episode rewards
+            mean_ep_reward = np.asarray(mean_ep_reward)
+            std_ep_reward = np.asarray(std_ep_reward)
+            fig, ax = plt.subplots()
+            ax.plot(np.arange(len(mean_ep_reward)), mean_ep_reward, alpha=0.7, color='red', label='mean', linewidth = 0.5)
+            ax.fill_between(np.arange(len(mean_ep_reward)), np.clip(mean_ep_reward - std_ep_reward, -200, None), mean_ep_reward + std_ep_reward, color='#888888', alpha=0.4)
+            ax.legend(loc='upper left')
+            ax.set_ylabel("Rewards")
+            ax.set_xlabel("N_episode")
+            ax.set_title("Episode rewards")
+            plt.show()

@@ -74,11 +74,12 @@ def g_nll(X, mu, sigSqr, log_sig=None, keep_batch=False):
     return nll
 
 
-@tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
-                               tf.TensorSpec(shape=None, dtype=tf.float32)])
-def mse_with_sum(x_reconst, x_true):
+@tf.function
+def mse_with_sum(x_reconst, x_true, keep_batch=False):
     ''' Mean Squared Error with sum over last dimension '''
     sse = tf.math.reduce_sum(tf.math.square(x_reconst - x_true), axis=-1)
+    if keep_batch:
+        return sse
     return tf.math.reduce_mean(sse)
 
 
@@ -86,7 +87,6 @@ def mse_with_sum(x_reconst, x_true):
                                tf.TensorSpec(shape=None, dtype=tf.float32)])
 def mse(x_reconst, x_true):
     ''' Mean Squared Error '''
-    #se = tf.math.square(x_reconst - x_true)
     return tf.math.reduce_mean(squared_error_vec(x_reconst,x_true))
 
 

@@ -37,8 +37,12 @@ class PPLModel(tf.Module):
         self.is_stateful = args.is_stateful  # whether the model maintain a hidden state
         self.double_q = args.double_q  # use double-Q learning or not
         self.use_sum_q = False  # whether to use the summation form of Q-learning
+        self.sample_average = 'states'  # or 'EFE_values'
+        self.eptm_type = 'kld'  # or 'diff_gnll'
+        self.future_type = 'actual'  # or 'predicted'
+        self.td_loss = 'huber'  # or 'mse'
         self.z_state = None
-        self.l2_reg = args.l2_reg
+        self.l2_reg = args.l2_reg  # L2 regularization factor for weights of all modules
         self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
         self.rho = tf.Variable(0.0, trainable=False)  # weight term on the epistemic value
         self.gamma_d = tf.Variable(0.99, trainable=False)  # discount factor in Bellman equation
@@ -52,10 +56,15 @@ class PPLModel(tf.Module):
         if tf.random.uniform(shape=()) > self.epsilon:
             # action selection using o_t and EFE network
             if not self.is_stateful:
-                states, _, _ = self.encoder(obv_t)
+                state, s_mu, s_std = self.encoder(obv_t)
+                states = tf.squeeze(nn.sample_k_times(self.n_samples, s_mu, s_std))
+                if self.sample_average == 'states':
+                    states = tf.reduce_mean(states, axis=0, keepdims=True)
             else:
                 states = self.z_state
             efe_t = self.EFEnet(states)
+            if self.sample_average == 'EFE_values':
+                efe_t = tf.reduce_mean(efe_t, axis=0, keepdims=True)
             action = tf.argmax(efe_t, axis=-1, output_type=tf.int32)
         else:
             action = tf.random.uniform(shape=(1,), maxval=self.a_size, dtype=tf.int32)
@@ -79,64 +88,61 @@ class PPLModel(tf.Module):
         with tf.GradientTape(persistent=True) as tape:
             ### run s_t and a_t through the PPL model ###
             states, state_mu, state_std = self.encoder(obv_t)
-            # states, state_mu, state_std, state_log_sigma = self.encoder(obv_t)
 
             efe_t = self.EFEnet(states)  # in batch, output shape (batch x a_space_size)
 
             states_next_tran, s_next_tran_mu, s_next_tran_std = self.transition(tf.concat([states, action], axis=-1))
-            # states_next_tran, s_next_tran_mu, s_next_tran_std, s_next_tran_log_sigma = self.transition(tf.concat([states, action], axis=-1))
 
             o_next_hat, o_next_mu, o_next_std = self.decoder(states_next_tran)
-            # o_next_hat, o_next_mu, o_next_std, o_next_log_sigma = self.decoder(states_next_tran)
 
             states_next_enc, s_next_enc_mu, s_next_enc_std = self.encoder(obv_next)
-            # states_next_enc, s_next_enc_mu, s_next_enc_std, s_next_enc_log_sigma = self.encoder(obv_next)
 
             with tape.stop_recording():
                 o_next_prior, o_prior_mu, o_prior_std = self.priorModel(obv_t)
                 
-                # Alternative: difference between preferred future and predicted future
-                # R_ti = -1.0 * mcs.g_nll(o_next_hat,
-                #                     o_prior_mu,
-                #                     o_prior_std * o_prior_std,
-                #                     keep_batch=True)
-                
-                # difference between preferred future and actual future, i.e. instrumental term
-                # R_ti = -1.0 * mcs.g_nll_old(o_prior_mu, o_prior_std, obv_next, keep_batch=True)
-                R_ti = -1.0 * mcs.g_nll(obv_next,
-                                    o_prior_mu,
-                                    o_prior_std * o_prior_std,
-                                    # o_prior_log_sigma,
-                                    keep_batch=True)
+                ### Instrumental term ###
+                if self.future_type == 'predicted':
+                    # difference between preferred future and predicted future
+                    R_ti = -1.0 * mcs.g_nll(o_next_hat,
+                                        o_prior_mu,
+                                        o_prior_std * o_prior_std,
+                                        keep_batch=True)
+                elif self.future_type == 'actual':
+                    # difference between preferred future and actual future
+                    R_ti = -1.0 * mcs.g_nll(obv_next,
+                                        o_prior_mu,
+                                        o_prior_std * o_prior_std,
+                                        keep_batch=True)
 
-                ### negative almost KL-D between state distribution from transition model and from
-                # approximate posterior model (encoder), i.e. epistemic value. Assumption is made. ###
-                # R_te = -1.0 * mcs.kl_d_old(s_next_tran_mu, s_next_tran_std, s_next_enc_mu, s_next_enc_std, keep_batch=True)
-                R_te = -1.0 * mcs.kl_d(s_next_tran_mu,
-                                    s_next_tran_std * s_next_tran_std,
-                                    tf.math.log(s_next_tran_std),
-                                    s_next_enc_mu,
-                                    s_next_enc_std * s_next_enc_std,
-                                    tf.math.log(s_next_enc_std),
-                                    keep_batch=True)
-                ### alternative epistemic term using sampled next state as X ###
-                # R_te = mcs.g_nll(states_next_tran,
-                #             s_next_tran_mu,
-                #             s_next_tran_std * s_next_tran_std,
-                #             # s_next_tran_log_sigma,
-                #             keep_batch=True) - g_nll(states_next_tran,
-                #             s_next_enc_mu,
-                #             s_next_enc_std * s_next_enc_std,
-                #             # s_next_enc_log_sigma,
-                #             keep_batch=True)
+                ### Epistemic term ###
+                if self.eptm_type == 'kld':
+                    # negative almost KL-D between state distribution from transition model and from
+                    # approximate posterior model (encoder). Assumption is made.
+                    R_te = -1.0 * mcs.kl_d(s_next_tran_mu,
+                                        s_next_tran_std * s_next_tran_std,
+                                        tf.math.log(s_next_tran_std),
+                                        s_next_enc_mu,
+                                        s_next_enc_std * s_next_enc_std,
+                                        tf.math.log(s_next_enc_std),
+                                        keep_batch=True)
+                elif self.eptm_type == 'diff_gnll':
+                    # alternative epistemic term using sampled next state as X
+                    R_te = mcs.g_nll(states_next_tran,
+                                s_next_tran_mu,
+                                s_next_tran_std * s_next_tran_std,
+                                keep_batch=True) - g_nll(states_next_tran,
+                                s_next_enc_mu,
+                                s_next_enc_std * s_next_enc_std,
+                                keep_batch=True)
+                
                 # clip the epistemic value
                 R_te = tf.clip_by_value(R_te, -50.0, 50.0)
 
-                # the nagative EFE value, i.e. the reward. Note the sign here
+                ### the nagative EFE value, i.e. the reward. Note the sign here ###
                 R_t = R_ti + self.rho * R_te
 
             ## model reconstruction loss ##
-            loss_reconst = mcs.g_nll(obv_next, o_next_mu, o_next_std * o_next_std) #, o_next_log_sigma)
+            loss_reconst = mcs.g_nll(obv_next, o_next_mu, o_next_std * o_next_std)
             # regularization for weights
             loss_l2 = tf.add_n([tf.nn.l2_loss(var) for var in self.trainable_variables if 'W' in var.name])
             loss_l2 *= self.l2_reg
@@ -147,18 +153,23 @@ class PPLModel(tf.Module):
                                 s_next_tran_mu,
                                 s_next_tran_std * s_next_tran_std,
                                 tf.math.log(s_next_tran_std))
-            # latent regularization term
-            unit_Gaussian_mu = tf.zeros(tf.shape(s_next_enc_mu))
-            unit_Gaussian_std = tf.ones(tf.shape(s_next_enc_std))
-            loss_latent_reg = mcs.kl_d(s_next_enc_mu,
-                                    s_next_enc_std * s_next_enc_std,
-                                    tf.math.log(s_next_enc_std),
-                                    unit_Gaussian_mu,
-                                    unit_Gaussian_std * unit_Gaussian_std,
-                                    tf.math.log(unit_Gaussian_std))
 
-            loss_model = loss_reconst + self.gamma * loss_latent + (1 - self.gamma) * loss_latent_reg + loss_l2
+            if tf.less(self.gamma, 1.0):
+                # latent regularization term
+                unit_Gaussian_mu = tf.zeros(tf.shape(s_next_enc_mu))
+                unit_Gaussian_std = tf.ones(tf.shape(s_next_enc_std))
+                loss_latent_reg = mcs.kl_d(s_next_enc_mu,
+                                        s_next_enc_std * s_next_enc_std,
+                                        tf.math.log(s_next_enc_std),
+                                        unit_Gaussian_mu,
+                                        unit_Gaussian_std * unit_Gaussian_std,
+                                        tf.math.log(unit_Gaussian_std))
 
+                loss_model = loss_reconst + self.gamma * loss_latent + (1 - self.gamma) * loss_latent_reg + loss_l2
+            else:
+                loss_model = loss_reconst + loss_latent + loss_l2
+
+            ### Bellman equation ###
             done = tf.expand_dims(tf.cast(done, dtype=tf.float32), axis=1)
             if self.use_sum_q:
                 # take the old EFE values given action indices
@@ -191,18 +202,22 @@ class PPLModel(tf.Module):
                     y_j = R_t + (efe_new * self.gamma_d) * (1.0 - done)
                     y_j = (action * y_j) + (efe_old * (1.0 - action))
 
-            ## TD loss ##
+            ### TD loss ###
             # Alternative: use Huber loss instead of MSE loss
             if weights is not None:
-                loss_efe_batch = mcs.huber(efe_old, y_j, keep_batch=True)
+                if self.td_loss == 'huber':
+                    loss_efe_batch = mcs.huber(efe_old, y_j, keep_batch=True)
+                elif self.td_loss == 'mse':
+                    loss_efe_batch = mcs.mse_with_sum(efe_old, y_j, keep_batch=True)
                 priorities = tf.math.abs(loss_efe_batch) + 1e-5
                 loss_efe_batch = tf.squeeze(loss_efe_batch)
                 loss_efe_batch *= weights
                 loss_efe = tf.math.reduce_mean(loss_efe_batch)
             else:
-                loss_efe = mcs.huber(efe_old, y_j)
-            # use MSE loss for the TD error
-            # loss_efe = mcs.mse(efe_old, (R_t + efe_new * (1 - done)))
+                if self.td_loss == 'huber':
+                    loss_efe = mcs.huber(efe_old, y_j)
+                elif self.td_loss == 'mse':
+                    loss_efe = mcs.mse_with_sum(efe_old, y_j)
 
         # calculate gradient w.r.t model reconstruction and TD respectively
         grads_model = tape.gradient(loss_model, self.trainable_variables)
