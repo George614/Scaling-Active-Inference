@@ -83,7 +83,8 @@ class LayerNormalization(tf.Module):
     Layer normalization layer 
     ref. https://arxiv.org/pdf/1607.06450.pdf
     '''
-    def __init__(self, shape, gamma=True, beta=True, epsilon=1e-10):
+    def __init__(self, shape, gamma=True, beta=True, epsilon=1e-10, name="LayerNorm"):
+        super().__init__(name=name)
         if isinstance(shape, int):
             normal_shape = (shape,)
         else:

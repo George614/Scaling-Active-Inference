@@ -9,8 +9,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL
 logging.getLogger('tensorflow').setLevel(logging.FATAL)
 
 import tensorflow as tf
+import tensorflow_addons as tfa
 from datetime import datetime
-from utils import PARSER
+from arg_parser import PARSER
 from AI_models import PPLModel
 from buffers import ReplayBuffer, NaivePrioritizedBuffer
 from scheduler import Linear_schedule, Exponential_schedule

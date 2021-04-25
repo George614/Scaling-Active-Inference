@@ -130,7 +130,7 @@ class PPLModel(tf.Module):
                     R_te = mcs.g_nll(states_next_tran,
                                 s_next_tran_mu,
                                 s_next_tran_std * s_next_tran_std,
-                                keep_batch=True) - g_nll(states_next_tran,
+                                keep_batch=True) - mcs.g_nll(states_next_tran,
                                 s_next_enc_mu,
                                 s_next_enc_std * s_next_enc_std,
                                 keep_batch=True)

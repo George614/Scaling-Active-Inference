@@ -7,7 +7,7 @@ logging.getLogger('tensorflow').setLevel(logging.FATAL)
 
 import tensorflow as tf
 from datetime import datetime
-from utils import PARSER
+from arg_parser import PARSER
 from common_nn import FlexibleEncoder
 import metrics as mcs
 
