@@ -33,14 +33,20 @@ if __name__ == '__main__':
     prob_alpha = 0.6  # power value used in the PER
     batch_size = 256
     grad_norm_clip = 10.0
-    log_interval = 4
-    keep_expert_batch = True
-    use_per_buffer = True
-    vae_reg = False
-    epistemic_anneal = True
+    log_interval = 4  # TensorBoard log interval
+    keep_expert_batch = True  # always keep expert data in buffer
+    use_per_buffer = True  # whether use Prioritized Experience Replay
+    vae_reg = False  # whether regularize VAE with unit Gaussian
+    epistemic_anneal = True  # whether anneal the epistemic term
     plot_eps_schedule = False
     plot_rewards = False
-    is_stateful = args.is_stateful
+    test_weight_avg = args.test_weight_avg  # model weights averaging during testing
+    average_after = 200  # episodes before Polyak averaging
+    winSize = 10  # window size for Polyak averaging
+    use_swa = args.use_swa  # whether use Stochastic Weight Averaging with optimizer
+    start_avg = 20000  # steps before applying SWA
+    avg_period = 100  # average interval for SWA
+    is_stateful = args.is_stateful  # whether keep a running neural state when testing
     seed = args.seed
     # epsilon exponential decay schedule
     epsilon_start = 0.9
@@ -83,12 +89,15 @@ if __name__ == '__main__':
 
     ### initialize optimizer and buffers ###
     if args.vae_optimizer == "AdamW":
-        import tensorflow_addons as tfa
         opt = tfa.optimizers.AdamW(learning_rate=args.vae_learning_rate, weight_decay=args.vae_weight_decay, epsilon=1e-5)
     else:
         opt = tf.keras.optimizers.get(args.vae_optimizer)
         opt.__setattr__('learning_rate', args.vae_learning_rate)
         opt.__setattr__('epsilon', 1e-5)
+        # opt.__setattr__('clipnorm', grad_norm_clip)
+    if use_swa:  # Stochastic Weight Averaging
+        opt = tfa.optimizers.SWA(opt, start_averaging=start_avg, average_period=avg_period)
+
     if use_per_buffer:
         per_buffer = NaivePrioritizedBuffer(buffer_size * 2, prob_alpha=prob_alpha)
     else:
@@ -147,6 +156,12 @@ if __name__ == '__main__':
     priorModel = tf.saved_model.load(prior_model_save_path)
     # initial our model using parameters in the config file
     pplModel = PPLModel(priorModel, args=args)
+    if test_weight_avg is not None:
+        # make a dedicated pplModel for testing
+        test_Model = PPLModel(priorModel, args=args)
+        # make a checkpoint object/wrapper on our model
+        ckpt = tf.train.Checkpoint(net=pplModel) #, optimizer=opt)
+        ckpt_restored = tf.train.Checkpoint(net=test_Model)
 
     mean_ep_reward = []
     std_ep_reward = []
@@ -257,7 +272,10 @@ if __name__ == '__main__':
                 for (grad, var) in zip(grads_efe_clipped, pplModel.trainable_variables) 
                 if grad is not None
                 )
-
+            
+            # update moving average of weights
+            pplModel.update_ma()
+            
             weights_maxes = [tf.math.reduce_max(var) for var in pplModel.trainable_variables]
             weights_mins = [tf.math.reduce_min(var) for var in pplModel.trainable_variables]
             weights_max = tf.math.reduce_max(weights_maxes)
@@ -307,10 +325,42 @@ if __name__ == '__main__':
         observation = env.reset()
         if is_stateful:
             pplModel.clear_state()
+        if test_weight_avg is not None:
+            # save a checkpoint
+            ckpt.save(os.path.join(model_save_path, "ckpt"))
 
         ### evaluate the PPL model using a number of episodes ###
         pplModel.training.assign(False)
         pplModel.epsilon.assign(0.0) # use greedy policy when testing
+        if test_weight_avg == 'ema':
+            for test_var, var in zip(test_Model.trainable_variables, pplModel.moving_averages):
+                test_var.assign(var)
+        elif test_weight_avg == 'winPolyak':
+            latest_count = ckpt.save_counter.numpy()
+            if latest_count >= average_after:
+                weight_list = []
+                for i in range(latest_count, latest_count-winSize, -1):
+                    ckpt_restored.restore(os.path.join(model_save_path, "ckpt-{}".format(i)))
+                    weight_list.append(test_Model.trainable_variables)
+                n_layers = len(weight_list[0])
+                avg_weights = []
+                alpha = 2.0
+                weights = [tf.math.exp(-i/alpha) for i in range(1, winSize+1)]
+                weights_sum = tf.reduce_sum(weights)
+                weights = [w / weights_sum for w in weights]
+                averaged_m_weights = []
+                for i in range(n_layers):
+                    layer_weights = [m_weight[i] for m_weight in weight_list]
+                    weighted_avg = tf.zeros_like(layer_weights[0])
+                    for w, m_w in zip(weights, layer_weights):
+                        weighted_avg += w * m_w
+                    averaged_m_weights.append(weighted_avg)
+                for test_var, var in zip(test_Model.trainable_variables, averaged_m_weights):
+                    test_var.assign(var)
+            else:
+                for test_var, var in zip(test_Model.trainable_variables, pplModel.trainable_variables):
+                    test_var.assign(var)
+        
         reward_list = []
         for _ in range(test_episodes):
             episode_reward = 0
@@ -318,7 +368,10 @@ if __name__ == '__main__':
             while not done_test:
                 obv = tf.convert_to_tensor(observation, dtype=tf.float32)
                 obv = tf.expand_dims(obv, axis=0)
-                action = pplModel.act(obv)
+                if test_weight_avg is not None:
+                    action = test_Model.act(obv)
+                else:
+                    action = pplModel.act(obv)
                 action = action.numpy().squeeze()
                 observation, reward, done_test, _ = env.step(action)
                 episode_reward += reward

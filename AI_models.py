@@ -37,7 +37,7 @@ class PPLModel(tf.Module):
         self.is_stateful = args.is_stateful  # whether the model maintain a hidden state
         self.double_q = args.double_q  # use double-Q learning or not
         self.use_sum_q = False  # whether to use the summation form of Q-learning
-        self.sample_average = 'states'  # or 'EFE_values'
+        self.sample_average = args.sample_average  # 'states' or 'EFE_values'
         self.eptm_type = 'kld'  # or 'diff_gnll'
         self.future_type = 'actual'  # or 'predicted'
         self.td_loss = 'huber'  # or 'mse'
@@ -46,6 +46,10 @@ class PPLModel(tf.Module):
         self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
         self.rho = tf.Variable(0.0, trainable=False)  # weight term on the epistemic value
         self.gamma_d = tf.Variable(0.99, trainable=False)  # discount factor in Bellman equation
+        self.ma_decay = tf.Variable(0.999, trainable=False)  # decay for moving average
+        self.moving_averages = []
+        for var in self.trainable_variables:
+            self.moving_averages.append(tf.identity(var))
 
     @tf.function
     def act(self, obv_t):
@@ -82,6 +86,10 @@ class PPLModel(tf.Module):
     def update_target(self):
         for target_var, var in zip(self.EFEnet_target.variables, self.EFEnet.variables):
             target_var.assign(var)
+    
+    def update_ma(self):
+        for ma, var in zip(self.moving_averages, self.trainable_variables):
+            ma -= (1 - self.ma_decay) * (ma - var)
 
     @tf.function
     def train_step(self, obv_t, obv_next, action, done, weights=None):
