@@ -12,14 +12,14 @@ class PPLModel(tf.Module):
     human expert
     '''
     def __init__(self, priorModel, args):
-        super().__init__(name='PPLModel')
+        super(PPLModel, self).__init__(name='PPLModel')
         self.dim_z = args.z_size  # latent/state space size
         self.dim_obv = args.o_size  # observation size
         self.a_size = args.a_width  # action size
         self.n_samples = args.vae_n_samples
         self.dropout_rate = args.vae_dropout_rate
         self.layer_norm = args.layer_norm
-        self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
+        self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False, name='kl_weight')
         self.encoder = nn.FlexibleEncoder((self.dim_obv, 128, 128, self.dim_z), name='Encoder', dropout_rate=self.dropout_rate, layer_norm=False)
         self.decoder = nn.FlexibleEncoder((self.dim_z, 128, 128, self.dim_obv), name='Decoder', dropout_rate=self.dropout_rate, layer_norm=False)
         self.transition = nn.FlexibleEncoder((self.dim_z + self.a_size, 128, 128, self.dim_z), name='Transition', dropout_rate=self.dropout_rate, layer_norm=False)
@@ -32,8 +32,8 @@ class PPLModel(tf.Module):
         self.priorModel = priorModel
         self.obv_t = None
         self.a_t = None
-        self.epsilon = tf.Variable(1.0, trainable=False)  # epsilon greedy parameter
-        self.training = tf.Variable(True, trainable=False) # training mode
+        self.epsilon = tf.Variable(1.0, trainable=False, name='epsilon')  # epsilon greedy parameter
+        self.training = tf.Variable(True, trainable=False, name='training') # training mode
         self.is_stateful = args.is_stateful  # whether the model maintain a hidden state
         self.double_q = args.double_q  # use double-Q learning or not
         self.use_sum_q = False  # whether to use the summation form of Q-learning
@@ -43,10 +43,10 @@ class PPLModel(tf.Module):
         self.td_loss = 'huber'  # or 'mse'
         self.z_state = None
         self.l2_reg = args.l2_reg  # L2 regularization factor for weights of all modules
-        self.gamma = tf.Variable(1.0, trainable=False)  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
-        self.rho = tf.Variable(0.0, trainable=False)  # weight term on the epistemic value
-        self.gamma_d = tf.Variable(0.99, trainable=False)  # discount factor in Bellman equation
-        self.ma_decay = tf.Variable(0.999, trainable=False)  # decay for moving average
+        self.gamma = tf.Variable(1.0, trainable=False, name='gamma')  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
+        self.rho = tf.Variable(0.0, trainable=False, name='rho')  # weight term on the epistemic value
+        self.gamma_d = tf.Variable(0.99, trainable=False, name='gamma_d')  # discount factor in Bellman equation
+        self.ma_decay = tf.Variable(0.999, trainable=False, name='ma_decay')  # decay for moving average
         self.moving_averages = []
         for var in self.trainable_variables:
             self.moving_averages.append(tf.identity(var))
@@ -244,16 +244,17 @@ class StateModel(tf.Module):
     model.
     '''
     def __init__(self, args):
-        super().__init__(name='StateModel')
-        self.dim_z = args.z_size  # latent space size
-        self.dim_obv = args.o_size  # observation size
-        self.a_size = args.a_width  # action size
-        self.n_samples = args.vae_n_samples
-        self.kl_weight = tf.Variable(args.vae_kl_weight, trainable=False)
-        self.kl_regularize_weight = args.vae_kl_regularize_weight
-        self.transition = nn.Encoder(self.dim_z + self.a_size, self.dim_z, n_samples=self.n_samples, name='transition')
-        self.posterior = nn.Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, n_samples=self.n_samples, name='posterior')
-        self.likelihood = nn.Encoder(self.dim_z, self.dim_obv, name='likelihood')
+        super(StateModel, self).__init__(name='StateModel')
+        with self.name_scope:
+            self.dim_z = args.z_size  # latent space size
+            self.dim_obv = args.o_size  # observation size
+            self.a_size = args.a_width  # action size
+            self.n_samples = args.vae_n_samples
+            self.kl_weight = tf.Variable(args.vae_kl_weight, name='kl_weight', trainable=False)
+            self.kl_regularize_weight = args.vae_kl_regularize_weight
+            self.transition = nn.Encoder(self.dim_z + self.a_size, self.dim_z, n_samples=self.n_samples, name='transition')
+            self.posterior = nn.Encoder(self.dim_z + self.a_size + self.dim_obv, self.dim_z, n_samples=self.n_samples, name='posterior')
+            self.likelihood = nn.Encoder(self.dim_z, self.dim_obv, name='likelihood')
 
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32),
