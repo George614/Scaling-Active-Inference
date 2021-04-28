@@ -218,8 +218,8 @@ class FlexibleEncoder(tf.Module):
         # std = tf.clip_by_value(std, 0.01, 10.0)
         if self.mu is None:
             batch_size = tf.shape(x)[0]
-            self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), name='mu', trainable=False)
-            self.std = tf.Variable(tf.zeros((batch_size, self.dim_z)), name='std', trainable=False)
+            self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), name=self.name+'_mu', trainable=False)
+            self.std = tf.Variable(tf.zeros((batch_size, self.dim_z)), name=self.name+'_std', trainable=False)
         else:
             self.mu.assign(mu)
             self.std.assign(std)

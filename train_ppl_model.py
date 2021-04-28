@@ -156,9 +156,9 @@ if __name__ == '__main__':
     priorModel = tf.saved_model.load(prior_model_save_path)
     # initial our model using parameters in the config file
     pplModel = PPLModel(priorModel, args=args)
+    # make a dedicated pplModel for testing
+    test_Model = PPLModel(priorModel, args=args)
     if test_weight_avg is not None:
-        # make a dedicated pplModel for testing
-        test_Model = PPLModel(priorModel, args=args)
         # make a checkpoint object/wrapper on our model
         ckpt = tf.train.Checkpoint(net=pplModel) #, optimizer=opt)
         ckpt_restored = tf.train.Checkpoint(net=test_Model)
@@ -273,8 +273,9 @@ if __name__ == '__main__':
                 if grad is not None
                 )
             
-            # update moving average of weights
-            pplModel.update_ma()
+            if test_weight_avg == 'ema':
+                # update exponential moving average of weights
+                pplModel.update_ma()
             
             weights_maxes = [tf.math.reduce_max(var) for var in pplModel.trainable_variables]
             weights_mins = [tf.math.reduce_min(var) for var in pplModel.trainable_variables]
@@ -325,13 +326,14 @@ if __name__ == '__main__':
         observation = env.reset()
         if is_stateful:
             pplModel.clear_state()
-        if test_weight_avg is not None:
+        if test_weight_avg == 'winPolyak':
             # save a checkpoint
             ckpt.save(os.path.join(model_save_path, "ckpt"))
 
         ### evaluate the PPL model using a number of episodes ###
         pplModel.training.assign(False)
         pplModel.epsilon.assign(0.0) # use greedy policy when testing
+        
         if test_weight_avg == 'ema':
             for test_var, var in zip(test_Model.trainable_variables, pplModel.moving_averages):
                 test_var.assign(var)
@@ -361,6 +363,13 @@ if __name__ == '__main__':
                 for test_var, var in zip(test_Model.trainable_variables, pplModel.trainable_variables):
                     test_var.assign(var)
         
+        if use_swa:
+            avg_weights = [opt.get_slot(var, "average") for var in pplModel.trainable_variables]
+            for test_var, var in zip(test_Model.trainable_variables, avg_weights):
+                test_var.assign(var)
+
+        test_Model.epsilon.assign(0.0)  # remove effect from checkpoint restoration
+        test_Model.training.assign(False)
         reward_list = []
         for _ in range(test_episodes):
             episode_reward = 0
@@ -368,7 +377,7 @@ if __name__ == '__main__':
             while not done_test:
                 obv = tf.convert_to_tensor(observation, dtype=tf.float32)
                 obv = tf.expand_dims(obv, axis=0)
-                if test_weight_avg is not None:
+                if test_weight_avg is not None or use_swa:
                     action = test_Model.act(obv)
                 else:
                     action = pplModel.act(obv)
