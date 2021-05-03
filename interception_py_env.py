@@ -60,15 +60,22 @@ class InterceptionEnv(gym.Env):
     def __init__(self):
         self.subject_min_position = 0.0
         self.subject_max_position = 30.0
+
+        self.approach_angle_list = [135, 140, 145]
+        self.intercept_threshold = 0.35 * 2
+        self.subject_init_distance_min = 20.0
+        self.subject_init_distance_max = 30.0
         self.target_init_distance = 45.0
         self.target_init_speed_list = [11.25, 9.47, 8.18]
-        self.approach_angle_list = [135, 140, 145]
+        self.time_to_change_speed_min = 2.5
+        self.time_to_change_speed_max = 3.25
+        self.speed_change_duration = 0.5
         self.target_max_speed = 20.0
         self.target_fspeed_mean = 15.0
         self.target_fspeed_std = 5.0
-        self.intercept_threshold = 0.35 * 2
-
-        self.K = 0.017
+        self.target_min_speed = 10.0
+        self.lag_coefficient = 0.017
+    
         self.FPS = 30
 
         self.viewer = None
@@ -92,19 +99,19 @@ class InterceptionEnv(gym.Env):
 
     def step(self, action):
         assert self.action_space.contains(action), "%r (%s) invalid" % (action, type(action))
-
-        target_dis, target_speed, has_changed_speed, subject_dis, subject_speed = self.state
-        # TODO add the lagging effect to subject speed
-        subject_speed = self.action_speed_mappings[action]
-        subject_dis -= subject_speed / self.FPS
+        target_dis, target_speed, has_changed_speed, subject_dis, subject_speed = self.state    
 
         self.time += 1.0 / self.FPS
         if self.time >= self.time_to_change_speed and not has_changed_speed:
-            target_speed = self.np_random.normal(loc=15.0, scale=5.0)
-            target_speed = np.clip(target_speed, 10.0, 20.0)
-            # TODO smooth target speed change
             has_changed_speed = 1
+        if has_changed_speed:
+            speed_proportion = (self.time - self.time_to_change_speed) / self.speed_change_duration
+            target_speed = min(self.target_final_speed, speed_proportion * (self.target_final_speed - self.target_init_speed) + self.target_init_speed)
         
+        # TODO add the lagging effect to subject speed
+        subject_speed = self.action_speed_mappings[action]
+        # subject_speed += (subject_speed - self.action_speed_mappings[action]) * self.lag_coefficient
+        subject_dis -= subject_speed / self.FPS
         target_dis -= target_speed / self.FPS
         target_subject_dis = np.sqrt(np.square(target_dis) + np.square(subject_dis) - 2 * target_dis * subject_dis * np.cos(self.approach_angle * np.pi / 180))
 
@@ -117,11 +124,16 @@ class InterceptionEnv(gym.Env):
         return np.array(self.state), reward, done, {}
 
     def reset(self, target_speed_idx=0, approach_angle_idx=0):
-        self.time_to_change_speed = self.np_random.uniform(low=2.5, high=3.25)
+        self.time_to_change_speed = self.np_random.uniform(low=self.time_to_change_speed_min, high=self.time_to_change_speed_max)
         self.approach_angle = self.approach_angle_list[approach_angle_idx]
         self.target_init_speed = self.target_init_speed_list[target_speed_idx]
+        self.target_final_speed = np.clip(
+            self.np_random.normal(loc=self.target_fspeed_mean, scale=self.target_fspeed_std),
+            self.target_min_speed,
+            self.target_max_speed
+        )
         self.time = 0.0
-        subject_init_distance = self.np_random.uniform(low=20, high=30)
+        subject_init_distance = self.np_random.uniform(low=self.subject_init_distance_min, high=self.subject_init_distance_max)
         subject_init_speed = 0.0
         has_changed_speed = 0
         self.state = np.asarray([self.target_init_distance, self.target_init_speed, has_changed_speed, subject_init_distance, subject_init_speed], dtype=np.float32)
