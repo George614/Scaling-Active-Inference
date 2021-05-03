@@ -46,8 +46,9 @@ class PPLModel(tf.Module):
         self.gamma = tf.Variable(1.0, trainable=False, name='gamma')  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
         self.rho = tf.Variable(0.0, trainable=False, name='rho')  # weight term on the epistemic value
         self.gamma_d = tf.Variable(0.99, trainable=False, name='gamma_d')  # discount factor in Bellman equation
-        self.ma_decay = tf.Variable(0.999, trainable=False, name='ma_decay')  # decay for moving average
+        self.ema_decay = tf.Variable(0.999, trainable=False, name='ma_decay')  # decay for moving average
         self.moving_averages = []
+        self.n_snapshots = 0  # number of snapshot weights for SWA
         for var in self.trainable_variables:
             self.moving_averages.append(tf.identity(var))
 
@@ -81,15 +82,26 @@ class PPLModel(tf.Module):
         return action
 
     def clear_state(self):
+        ''' reset the running neural state used with act() '''
         self.z_state = None
 
     def update_target(self):
+        ''' Update the target network with weights from the online network '''
         for target_var, var in zip(self.EFEnet_target.variables, self.EFEnet.variables):
             target_var.assign(var)
     
-    def update_ma(self):
+    def update_ema(self):
+        ''' Update the exponential moving average of weights'''
         for ma, var in zip(self.moving_averages, self.trainable_variables):
-            ma -= (1 - self.ma_decay) * (ma - var)
+            ma -= (1 - self.ema_decay) * (ma - var)
+
+    def update_swa(self):
+        ''' Update the SWA weights. Numer of averages and learning rate schedule are
+        handled outside this function for better flexibility '''
+        for ma, var in zip(self.moving_averages, self.trainable_variables):
+            avg = (ma * self.n_snapshots + var) / (self.n_snapshots + 1.0)
+            ma.assign(avg)
+        self.n_snapshots += 1
 
     @tf.function
     def train_step(self, obv_t, obv_next, action, done, weights=None):

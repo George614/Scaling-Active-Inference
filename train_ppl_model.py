@@ -14,7 +14,7 @@ from datetime import datetime
 from arg_parser import PARSER
 from AI_models import PPLModel
 from buffers import ReplayBuffer, NaivePrioritizedBuffer
-from scheduler import Linear_schedule, Exponential_schedule
+from scheduler import Linear_schedule, Exponential_schedule, SWA_schedule
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 args = PARSER.parse_args()
@@ -45,7 +45,7 @@ if __name__ == '__main__':
     winSize = 10  # window size for Polyak averaging
     use_swa = args.use_swa  # whether use Stochastic Weight Averaging with optimizer
     start_avg = 20000  # steps before applying SWA
-    avg_period = 100  # average interval for SWA
+    avg_period = 10  # average interval for SWA
     is_stateful = args.is_stateful  # whether keep a running neural state when testing
     seed = args.seed
     # epsilon exponential decay schedule
@@ -96,7 +96,8 @@ if __name__ == '__main__':
         opt.__setattr__('epsilon', 1e-5)
         # opt.__setattr__('clipnorm', grad_norm_clip)
     if use_swa:  # Stochastic Weight Averaging
-        opt = tfa.optimizers.SWA(opt, start_averaging=start_avg, average_period=avg_period)
+        # opt = tfa.optimizers.SWA(opt, start_averaging=start_avg, average_period=avg_period)
+        swa_sch = SWA_schedule(num_episodes, freq=avg_period)
 
     if use_per_buffer:
         per_buffer = NaivePrioritizedBuffer(buffer_size * 2, prob_alpha=prob_alpha)
@@ -183,6 +184,9 @@ if __name__ == '__main__':
             pplModel.gamma.assign(gamma)
         if use_per_buffer:
             beta = beta_by_episode(ep_idx)
+        if use_swa:
+            lr, swa_point = swa_sch(ep_idx)
+            opt.lr.assign(lr)
         while not done:
             frame_idx += 1
             epsilon = epsilon_by_frame(frame_idx)
@@ -275,7 +279,7 @@ if __name__ == '__main__':
             
             if test_weight_avg == 'ema':
                 # update exponential moving average of weights
-                pplModel.update_ma()
+                pplModel.update_ema()
             
             weights_maxes = [tf.math.reduce_max(var) for var in pplModel.trainable_variables]
             weights_mins = [tf.math.reduce_min(var) for var in pplModel.trainable_variables]
@@ -364,9 +368,17 @@ if __name__ == '__main__':
                     test_var.assign(var)
         
         if use_swa:
-            avg_weights = [opt.get_slot(var, "average") for var in pplModel.trainable_variables]
-            for test_var, var in zip(test_Model.trainable_variables, avg_weights):
-                test_var.assign(var)
+            # avg_weights = [opt.get_slot(var, "average") for var in pplModel.trainable_variables]
+            # for test_var, var in zip(test_Model.trainable_variables, avg_weights):
+            #     test_var.assign(var)
+            if swa_point:
+                pplModel.update_swa()
+            if pplModel.n_snapshots > 0:
+                for test_var, var in zip(test_Model.trainable_variables, pplModel.moving_averages):
+                    test_var.assign(var)
+            else:
+                for test_var, var in zip(test_Model.trainable_variables, pplModel.trainable_variables):
+                    test_var.assign(var)
 
         test_Model.epsilon.assign(0.0)  # remove effect from checkpoint restoration
         test_Model.training.assign(False)
