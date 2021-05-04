@@ -100,7 +100,7 @@ class PPLModel(tf.Module):
         handled outside this function for better flexibility '''
         for ma, var in zip(self.moving_averages, self.trainable_variables):
             avg = (ma * self.n_snapshots + var) / (self.n_snapshots + 1.0)
-            ma.assign(avg)
+            ma = tf.identity(avg)
         self.n_snapshots += 1
 
     @tf.function
