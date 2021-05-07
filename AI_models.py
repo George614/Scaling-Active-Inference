@@ -50,11 +50,11 @@ class PPLModel(tf.Module):
         self.gamma = tf.Variable(1.0, trainable=False, name='gamma')  # gamma weighting factor for balance KL-D on transition vs unit Gaussian
         self.rho = tf.Variable(0.0, trainable=False, name='rho')  # weight term on the epistemic value
         self.gamma_d = tf.Variable(0.99, trainable=False, name='gamma_d')  # discount factor in Bellman equation
-        self.ema_decay = tf.Variable(0.999, trainable=False, name='ma_decay')  # decay for moving average
+        self.ema_decay = tf.Variable(0.999, trainable=False, name='ema_decay')  # decay for moving average
         self.moving_averages = []
         self.n_snapshots = 0  # number of snapshot weights for SWA
         for var in self.trainable_variables:
-            self.moving_averages.append(tf.identity(var))
+            self.moving_averages.append(tf.Variable(tf.identity(var), trainable=False))
 
     @tf.function
     def act(self, obv_t):
@@ -115,7 +115,7 @@ class PPLModel(tf.Module):
         handled outside this function for better flexibility '''
         for ma, var in zip(self.moving_averages, self.trainable_variables):
             avg = (ma * self.n_snapshots + var) / (self.n_snapshots + 1.0)
-            ma = tf.identity(avg)
+            ma.assign(avg)
         self.n_snapshots += 1
 
     @tf.function
