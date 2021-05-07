@@ -34,6 +34,7 @@ if __name__ == '__main__':
     batch_size = 256
     grad_norm_clip = 10.0
     log_interval = 4  # TensorBoard log interval
+    prior_name = "zoo_data_old_gnll"  # "zoo_data"  # or 
     keep_expert_batch = True  # always keep expert data in buffer
     use_per_buffer = True  # whether use Prioritized Experience Replay
     vae_reg = False  # whether regularize VAE with unit Gaussian
@@ -44,8 +45,10 @@ if __name__ == '__main__':
     average_after = 200  # episodes before Polyak averaging
     winSize = 10  # window size for Polyak averaging
     use_swa = args.use_swa  # whether use Stochastic Weight Averaging with optimizer
+    picky_swa = True
+    picky_reward = -120
     start_avg = 20000  # steps before applying SWA
-    avg_period = 10  # average interval for SWA
+    avg_period = 50  # average interval for SWA
     is_stateful = args.is_stateful  # whether keep a running neural state when testing
     seed = args.seed
     # epsilon exponential decay schedule
@@ -153,7 +156,7 @@ if __name__ == '__main__':
 
     ### load the prior preference model ###
     prior_model_save_path = "results/prior_model/{}/".format(args.env_name)
-    prior_model_save_path = os.path.join(prior_model_save_path, "zoo_data_old_gnll")
+    prior_model_save_path = os.path.join(prior_model_save_path, prior_name)
     priorModel = tf.saved_model.load(prior_model_save_path)
     # initial our model using parameters in the config file
     pplModel = PPLModel(priorModel, args=args)
@@ -406,7 +409,7 @@ if __name__ == '__main__':
         mean_ep_reward.append(mean_reward)
         std_ep_reward.append(std_reward)
         print("episode {}, mean reward {:.3f}, std reward {:.3f}".format(ep_idx+1, mean_reward, std_reward))
-        tf.summary.scalar('mean_ep_rewards', mean_ep_reward[-1], step=ep_idx+1)
+        tf.summary.scalar('mean_ep_rewards', mean_reward, step=ep_idx+1)
 
         # annealing of the epistemic term based on the average test rewards
         if epistemic_anneal:
@@ -416,6 +419,23 @@ if __name__ == '__main__':
             if rho_anneal_start:
                 rho = rho_by_episode(ep_idx - start_ep)
                 pplModel.rho.assign(rho)
+
+        if picky_swa and mean_reward > picky_reward:
+            pplModel.update_swa()
+            for test_var, var in zip(test_Model.trainable_variables, pplModel.moving_averages):
+                test_var.assign(var)
+            episode_reward = 0
+            done_test = False
+            while not done_test:
+                obv = tf.convert_to_tensor(observation, dtype=tf.float32)
+                obv = tf.expand_dims(obv, axis=0)
+                action = test_Model.act(obv)
+                action = action.numpy().squeeze()
+                observation, reward, done_test, _ = env.step(action)
+                episode_reward += reward
+            observation = env.reset()
+            print("episode {}, swa reward {}".format(ep_idx+1, episode_reward))
+            tf.summary.scalar('swa_rewards', episode_reward, step=ep_idx+1)
 
     env.close()
     if crash:
