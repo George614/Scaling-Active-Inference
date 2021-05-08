@@ -45,7 +45,7 @@ if __name__ == '__main__':
     average_after = 200  # episodes before Polyak averaging
     winSize = 10  # window size for Polyak averaging
     use_swa = args.use_swa  # whether use Stochastic Weight Averaging with optimizer
-    picky_swa = True
+    picky_swa = args.picky_swa # whether use Picky Stochastic Weight Averaging
     picky_reward = -120
     start_avg = 20000  # steps before applying SWA
     avg_period = 50  # average interval for SWA
@@ -98,7 +98,7 @@ if __name__ == '__main__':
         opt.__setattr__('learning_rate', args.vae_learning_rate)
         opt.__setattr__('epsilon', 1e-5)
         # opt.__setattr__('clipnorm', grad_norm_clip)
-    if use_swa:  # Stochastic Weight Averaging
+    if use_swa or picky_swa:  # Stochastic Weight Averaging
         # opt = tfa.optimizers.SWA(opt, start_averaging=start_avg, average_period=avg_period)
         swa_sch = SWA_schedule(num_episodes, freq=avg_period)
 
@@ -187,7 +187,7 @@ if __name__ == '__main__':
             pplModel.gamma.assign(gamma)
         if use_per_buffer:
             beta = beta_by_episode(ep_idx)
-        if use_swa:
+        if use_swa or picky_swa:
             lr, swa_point = swa_sch(ep_idx)
             opt.lr.assign(lr)
         while not done:
