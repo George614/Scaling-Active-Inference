@@ -26,7 +26,7 @@ for gpu in gpu_devices:
 if __name__ == '__main__':
     num_frames = 200000  # total number of training steps
     num_episodes = 2000  # total number of training episodes
-    test_episodes = 1  # number of episodes for testing
+    test_episodes = 3  # number of episodes for testing
     target_update_freq = 500  # in terms of steps
     target_update_ep = 2  # in terms of episodes
     buffer_size = 100000
@@ -424,18 +424,22 @@ if __name__ == '__main__':
             pplModel.update_swa()
             for test_var, var in zip(test_Model.trainable_variables, pplModel.moving_averages):
                 test_var.assign(var)
-            episode_reward = 0
-            done_test = False
-            while not done_test:
-                obv = tf.convert_to_tensor(observation, dtype=tf.float32)
-                obv = tf.expand_dims(obv, axis=0)
-                action = test_Model.act(obv)
-                action = action.numpy().squeeze()
-                observation, reward, done_test, _ = env.step(action)
-                episode_reward += reward
-            observation = env.reset()
-            print("episode {}, swa reward {}".format(ep_idx+1, episode_reward))
-            tf.summary.scalar('swa_rewards', episode_reward, step=ep_idx+1)
+            reward_list = []
+            for _ in range(test_episodes):
+                episode_reward = 0
+                done_test = False
+                while not done_test:
+                    obv = tf.convert_to_tensor(observation, dtype=tf.float32)
+                    obv = tf.expand_dims(obv, axis=0)
+                    action = test_Model.act(obv)
+                    action = action.numpy().squeeze()
+                    observation, reward, done_test, _ = env.step(action)
+                    episode_reward += reward
+                observation = env.reset()
+                reward_list.append(episode_reward)
+            mean_test_reward = np.mean(reward_list)
+            print("episode {}, swa reward {}".format(ep_idx+1, mean_test_reward))
+            tf.summary.scalar('swa_rewards', mean_test_reward, step=ep_idx+1)
 
     env.close()
     if crash:
