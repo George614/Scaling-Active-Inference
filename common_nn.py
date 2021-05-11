@@ -207,8 +207,7 @@ class FlexibleEncoder(tf.Module):
             if self.norm_layers is not None:
                 x = self.norm_layers[i](x)
             x = self.activation(x)
-            if self.dropout_rate > 0:
-                x = tf.nn.dropout(x, rate=self.dropout_rate)
+            x = tf.cond(self.dropout_rate > 0, lambda: tf.nn.dropout(x, rate=self.dropout_rate), lambda: x)
         mu = self.layers[-2](x)
         raw_std = self.layers[-1](x)
         # softplus is supposed to avoid numerical overflow
@@ -256,8 +255,7 @@ class FlexibleMLP(tf.Module):
     def __call__(self, x):
         for i in range(len(self.layers) - 1):
             x = self.layers[i](x)
-            if self.layer_norm:
-                x = self.norm_layers[i](x)
+            x = tf.cond(self.layer_norm, lambda: self.norm_layers[i](x), lambda: x)
             x = self.activation(x)
         x = self.layers[-1](x)  # linear activation for the last layer
         return x

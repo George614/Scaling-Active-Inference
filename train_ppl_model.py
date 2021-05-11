@@ -108,9 +108,12 @@ if __name__ == '__main__':
         expert_buffer = ReplayBuffer(buffer_size, seed=seed)
         replay_buffer = ReplayBuffer(buffer_size, seed=seed)
     
+    # initialize env
+    env = gym.make(args.env_name)
     # set seeds
     tf.random.set_seed(seed)
     np.random.seed(seed)
+    env.seed(seed=seed)
 
     ### load and pre-process human expert-batch data ###
     # print("Human expert batch data path: ", args.prior_data_path)
@@ -173,7 +176,6 @@ if __name__ == '__main__':
     crash = False
     rho_anneal_start = False
     
-    env = gym.make(args.env_name)
     observation = env.reset()
 
     # for frame_idx in range(1, num_frames + 1): # deprecated
