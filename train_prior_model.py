@@ -21,7 +21,7 @@ for gpu in gpu_devices:
 @tf.function
 def train_step(model, optimizer, o_cur, o_next):
     with tf.GradientTape(persistent=True) as tape:
-        z_sample, mu_o, std_o, log_sigma_o = model(o_cur)
+        z_sample, mu_o, std_o = model(o_cur)
         # gnll = mcs.g_nll_old(mu_o, std_o, o_next)
         gnll = mcs.g_nll(o_next, mu_o, std_o * std_o)
         # regularization for weights
@@ -38,12 +38,13 @@ def train_step(model, optimizer, o_cur, o_next):
 def eval_step(model, o_cur, o_next):
     # z_sample, mu_o, std_o = model(o_cur)
     # gnll = mcs.g_nll_old(mu_o, std_o, o_next)
-    z_sample, mu_o, std_o, log_sigma_o = model(o_cur)
+    z_sample, mu_o, std_o = model(o_cur)
     gnll = mcs.g_nll(o_next, mu_o, std_o * std_o)
     return gnll
     
 
 if __name__ == "__main__":
+    ## load human expert data 
     # print("Prior model training data path: ", args.prior_data_path)
     # all_data = np.load(args.prior_data_path + "/all_human_data.npy", allow_pickle=True)
     # all_data = all_data[1:-1, 1:, :]  # exclude samples with imcomplete sequence
@@ -58,15 +59,17 @@ if __name__ == "__main__":
     #     obv_all.append(np.hstack((o_t, o_tp1)))
     
     # obv_all = np.vstack(obv_all)
-
+    
+    ## load rl-baseline3_zoo data
     print("Prior model training data path: ", args.zoo_data_path)
-    all_data = np.load(args.zoo_data_path + "/zoo-agent-mcar.npy", allow_pickle=True)
-    obv_t, obv_tp1, done = all_data[:, :2], all_data[:, 4:6], all_data[:, 6]
+    all_data = np.load(args.zoo_data_path + "/zoo-ppo_{}.npy".format(args.env_name), allow_pickle=True)
+    obv_size = args.o_size
+    obv_t, obv_tp1, done = all_data[:, :obv_size], all_data[:, obv_size+2:-1], all_data[:, -1]
     obv_all = np.hstack((obv_t, obv_tp1))
     obv_all = obv_all[np.not_equal(done, 1)]
     
     batch_size = 128
-    n_epoch = 100
+    n_epoch = 500
     test_n_samples = len(obv_all) // 10  # use 10% of data for testing
     all_dataset = tf.data.Dataset.from_tensor_slices(obv_all)
     test_dataset = all_dataset.take(test_n_samples)
@@ -95,7 +98,7 @@ if __name__ == "__main__":
         print("=================== Epoch {} ==================".format(epoch+1))
         for training_step, x_batch in enumerate(train_dataset):
             # split the batch data into observation and action (disgard reward for now)
-            o_cur_batch, o_next_batch = x_batch[:, 0:2], x_batch[:, 2:]
+            o_cur_batch, o_next_batch = x_batch[:, :obv_size], x_batch[:, obv_size:]
             gnll, l2_loss = train_step(prior_model, opt, o_cur_batch, o_next_batch)
 
             total_train_steps += 1
@@ -107,7 +110,7 @@ if __name__ == "__main__":
         
         # evaluate the network
         for sample in test_dataset:
-            o_cur_batch, o_next_batch = sample[:, 0:2], sample[:, 2:]
+            o_cur_batch, o_next_batch = sample[:, :obv_size], sample[:, obv_size:]
             gnll_test = eval_step(prior_model, o_cur_batch, o_next_batch)
             tf.summary.scalar('GNLL_Test', gnll_test.numpy(), step=total_train_steps)
             print("epoch {}, gnll_test: {:.3f}".format(epoch+1, gnll_test.numpy()))
