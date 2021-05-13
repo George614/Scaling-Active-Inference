@@ -25,16 +25,16 @@ for gpu in gpu_devices:
 
 if __name__ == '__main__':
     num_frames = 200000  # total number of training steps
-    num_episodes = 2000  # total number of training episodes
+    num_episodes = args.max_episodes  # total number of training episodes
     test_episodes = 3  # number of episodes for testing
     target_update_freq = 500  # in terms of steps
     target_update_ep = 2  # in terms of episodes
     buffer_size = 100000
     prob_alpha = 0.6  # power value used in the PER
-    batch_size = 256
+    batch_size = args.vae_batch_size
     grad_norm_clip = 10.0
     log_interval = 4  # TensorBoard log interval
-    prior_name = "zoo_data_old_gnll"  # "zoo_data"  # or 
+    prior_name = "zoo_data"  # "zoo_data_old_gnll"
     keep_expert_batch = True  # always keep expert data in buffer
     use_per_buffer = True  # whether use Prioritized Experience Replay
     vae_reg = False  # whether regularize VAE with unit Gaussian
@@ -139,16 +139,17 @@ if __name__ == '__main__':
 
     ### load and pre-process rl-zoo expert-batch data ###
     print("RL-zoo expert data path: ", args.zoo_data_path)
-    all_data = np.load(args.zoo_data_path + "/zoo-agent-mcar.npy", allow_pickle=True)
-    idx_done = np.where(all_data[:, 6] == 1)[0]
+    all_data = np.load(args.zoo_data_path + "/zoo-ppo_{}.npy".format(args.env_name), allow_pickle=True)
+    idx_done = np.where(all_data[:, -1] == 1)[0]
     idx_done = idx_done - 1  # fix error on next_obv when done in original data
-    mask = np.not_equal(all_data[:, 6], 1)
+    mask = np.not_equal(all_data[:, -1], 1)
     for idx in idx_done:
-        all_data[idx, 6] = 1
+        all_data[idx, -1] = 1
     all_data = all_data[mask]
 
+    obv_size = args.o_size
     for i in range(min(len(all_data), buffer_size)):
-        o_t, action, reward, o_tp1, done = all_data[i, :2], all_data[i, 2], all_data[i, 3], all_data[i, 4:6], all_data[i, 6]
+        o_t, action, reward, o_tp1, done = all_data[i, :obv_size], all_data[i, obv_size], all_data[i, obv_size+1], all_data[i, obv_size+2:-1], all_data[i, -1]
         if use_per_buffer:
             per_buffer.push(o_t, action, reward, o_tp1, done)
         else:
