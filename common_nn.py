@@ -27,7 +27,8 @@ def drop_out(input, rate=0.0, seed=69):
         Custom drop-out function -- returns output as well as binary mask
         @author Alex Ororbia
     """
-    mask = tf.math.less_equal( tf.random.uniform(shape=(input.shape[0],input.shape[1]), minval=0.0, maxval=1.0, dtype=tf.float32, seed=seed),(1.0 - rate))
+    mask = tf.math.less_equal(tf.random.uniform(shape=(
+        input.shape[0], input.shape[1]), minval=0.0, maxval=1.0, dtype=tf.float32, seed=seed), (1.0 - rate))
     mask = tf.cast(mask, tf.float32) * (1.0 / (1.0 - rate))
     output = input * mask
     return output, mask
@@ -41,15 +42,17 @@ def swish(x):
 
 class Dense(tf.Module):
     ''' fully-connected NN layer written in a TF2 way '''
+
     def __init__(self, in_features, out_features, name=None, trainable=True):
         super(Dense, self).__init__(name=name)
         bound = 1 / math.sqrt(in_features)
         with self.name_scope:
-            self.W = tf.random.uniform((in_features, out_features), -bound, bound)
+            self.W = tf.random.uniform(
+                (in_features, out_features), -bound, bound)
             self.W = tf.Variable(self.W, name='W', trainable=trainable)
             self.b = tf.zeros((out_features,))
             self.b = tf.Variable(self.b, name='b', trainable=trainable)
-    
+
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
         z_l = tf.matmul(X, self.W) + self.b
@@ -61,12 +64,15 @@ class LayerNorm(tf.Module):
     Layer normalization NN layer
     @author Alexander Ororbia
     '''
+
     def __init__(self, in_features, out_features, name=None, trainable=True):
         super(LayerNorm, self).__init__(name=name)
         with self.name_scope:
             self.var_eps = 1e-12
-            self.alpha = tf.Variable(tf.zeros([1,out_features]), name='alpha', trainable=trainable)
-            self.beta = tf.Variable(tf.zeros([1,out_features]), name='beta', trainable=trainable)
+            self.alpha = tf.Variable(
+                tf.zeros([1, out_features]), name='alpha', trainable=trainable)
+            self.beta = tf.Variable(
+                tf.zeros([1, out_features]), name='beta', trainable=trainable)
 
     @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.float32)])
     def __call__(self, X):
@@ -76,7 +82,8 @@ class LayerNorm(tf.Module):
         s = tf.reduce_mean(tf.pow(X_ - u, 2), axis=-1, keepdims=True)
         X_ = (X_ - u) / tf.sqrt(s + self.var_eps)
         # apply layer normalization re-scaling
-        X_ = tf.multiply(self.alpha, X_) + self.beta # same as Hadamard product
+        # same as Hadamard product
+        X_ = tf.multiply(self.alpha, X_) + self.beta
         return X_
 
 
@@ -85,6 +92,7 @@ class LayerNormalization(tf.Module):
     Layer normalization layer 
     ref. https://arxiv.org/pdf/1607.06450.pdf
     '''
+
     def __init__(self, shape, gamma=True, beta=True, epsilon=1e-10, trainable=True, name="LayerNorm"):
         super(LayerNormalization, self).__init__(name=name)
         if isinstance(shape, int):
@@ -92,14 +100,16 @@ class LayerNormalization(tf.Module):
         else:
             normal_shape = (shape[-1],)
         with self.name_scope:
-            self.normal_shape = normal_shape 
+            self.normal_shape = normal_shape
             self.epsilon = epsilon
             if gamma:
                 self.gamma = tf.ones(self.normal_shape)
-                self.gamma = tf.Variable(self.gamma, name="gamma", trainable=trainable)
+                self.gamma = tf.Variable(
+                    self.gamma, name="gamma", trainable=trainable)
             if beta:
                 self.beta = tf.zeros(self.normal_shape)
-                self.beta = tf.Variable(self.beta, name="beta", trainable=trainable)
+                self.beta = tf.Variable(
+                    self.beta, name="beta", trainable=trainable)
 
     def reset_parameters(self):
         if self.gamma is not None:
@@ -122,6 +132,7 @@ class LayerNormalization(tf.Module):
 
 class Encoder(tf.Module):
     ''' transition / posterior model of the active inference framework '''
+
     def __init__(self, dim_input, dim_z, n_samples=1, name='Encoder', activation='relu'):
         super(Encoder, self).__init__(name=name)
         with self.name_scope:
@@ -156,8 +167,10 @@ class Encoder(tf.Module):
         std = tf.clip_by_value(tf.math.softplus(raw_std), 0.01, 10.0)
         if self.mu is None:
             batch_size = tf.shape(X)[0]
-            self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
-            self.std = tf.Variable(tf.zeros((batch_size, self.dim_z)), trainable=False)
+            self.mu = tf.Variable(
+                tf.zeros((batch_size, self.dim_z)), trainable=False)
+            self.std = tf.Variable(
+                tf.zeros((batch_size, self.dim_z)), trainable=False)
         else:
             self.mu.assign(mu)
             self.std.assign(std)
@@ -169,26 +182,31 @@ class Encoder(tf.Module):
 class FlexibleEncoder(tf.Module):
     ''' Generic Gaussian encoder model based on Dense layer. Output mean and std as well
     as samples from the learned distribution '''
+
     def __init__(self, layer_dims, n_samples=1, name='Encoder', activation='relu', layer_norm=False, dropout_rate=0.0):
         super(FlexibleEncoder, self).__init__(name=name)
         with self.name_scope:
             self.dim_z = layer_dims[-1]
             self.N = n_samples
-            self.layers =[]
+            self.layers = []
             for i in range(len(layer_dims) - 2):
-                self.layers.append(Dense(layer_dims[i], layer_dims[i+1], name='Dense_{}'.format(i+1)))
+                self.layers.append(
+                    Dense(layer_dims[i], layer_dims[i+1], name='Dense_{}'.format(i+1)))
             # add another 2 groups of neurons for mu/std
             self.layers.append(Dense(layer_dims[-2], self.dim_z, name='Mean'))
             self.layers.append(Dense(layer_dims[-2], self.dim_z, name='Std'))
             self.mu = None
             self.std = None
-            self.layer_norm = tf.Variable(layer_norm, name='layer_norm', trainable=False)
-            self.dropout_rate = tf.Variable(dropout_rate, name='dropout_rate', trainable=False)
+            self.layer_norm = tf.Variable(
+                layer_norm, name='layer_norm', trainable=False)
+            self.dropout_rate = tf.Variable(
+                dropout_rate, name='dropout_rate', trainable=False)
             self.norm_layers = None
             if tf.equal(self.layer_norm, True):
                 self.norm_layers = []
                 for i in range(len(layer_dims) - 2):
-                    self.norm_layers.append(LayerNormalization(layer_dims[i+1], name='LayerNorm_{}'.format(i+1)))
+                    self.norm_layers.append(LayerNormalization(
+                        layer_dims[i+1], name='LayerNorm_{}'.format(i+1)))
             if activation == 'tanh':
                 self.activation = tf.nn.tanh
             elif activation == 'relu':
@@ -207,7 +225,8 @@ class FlexibleEncoder(tf.Module):
             if self.norm_layers is not None:
                 x = self.norm_layers[i](x)
             x = self.activation(x)
-            x = tf.cond(self.dropout_rate > 0, lambda: tf.nn.dropout(x, rate=self.dropout_rate), lambda: x)
+            x = tf.cond(self.dropout_rate > 0, lambda: tf.nn.dropout(
+                x, rate=self.dropout_rate), lambda: x)
         mu = self.layers[-2](x)
         raw_std = self.layers[-1](x)
         # softplus is supposed to avoid numerical overflow
@@ -217,29 +236,35 @@ class FlexibleEncoder(tf.Module):
         # std = tf.clip_by_value(std, 0.01, 10.0)
         if self.mu is None:
             batch_size = tf.shape(x)[0]
-            self.mu = tf.Variable(tf.zeros((batch_size, self.dim_z)), name=self.name+'_mu', trainable=False)
-            self.std = tf.Variable(tf.zeros((batch_size, self.dim_z)), name=self.name+'_std', trainable=False)
+            self.mu = tf.Variable(
+                tf.zeros((batch_size, self.dim_z)), name=self.name+'_mu', trainable=False)
+            self.std = tf.Variable(
+                tf.zeros((batch_size, self.dim_z)), name=self.name+'_std', trainable=False)
         else:
             self.mu.assign(mu)
             self.std.assign(std)
         z_sample = sample(mu, std)
 
-        return z_sample, mu, std #, log_sigma
+        return z_sample, mu, std  # , log_sigma
 
 
 class FlexibleMLP(tf.Module):
     ''' Simple multi-layer perceptron model taking layer parameters as input '''
+
     def __init__(self, layer_dims, name='MLP', activation='relu6', trainable=True, layer_norm=False):
         super(FlexibleMLP, self).__init__(name=name)
-        self.layers =[]
+        self.layers = []
         with self.name_scope:
             for i in range(len(layer_dims)-1):
-                self.layers.append(Dense(layer_dims[i], layer_dims[i+1], name='Dense_{}'.format(i+1), trainable=trainable))
-            self.layer_norm = tf.Variable(layer_norm, name='layer_norm', trainable=False)
+                self.layers.append(Dense(
+                    layer_dims[i], layer_dims[i+1], name='Dense_{}'.format(i+1), trainable=trainable))
+            self.layer_norm = tf.Variable(
+                layer_norm, name='layer_norm', trainable=False)
             if self.layer_norm:
                 self.norm_layers = []
                 for i in range(len(layer_dims) - 2):
-                    self.norm_layers.append(LayerNormalization(layer_dims[i+1], name='LayerNorm_{}'.format(i+1), trainable=trainable))
+                    self.norm_layers.append(LayerNormalization(
+                        layer_dims[i+1], name='LayerNorm_{}'.format(i+1), trainable=trainable))
             if activation == 'tanh':
                 self.activation = tf.nn.tanh
             elif activation == 'relu':
@@ -255,7 +280,8 @@ class FlexibleMLP(tf.Module):
     def __call__(self, x):
         for i in range(len(self.layers) - 1):
             x = self.layers[i](x)
-            x = tf.cond(self.layer_norm, lambda: self.norm_layers[i](x), lambda: x)
+            x = tf.cond(self.layer_norm,
+                        lambda: self.norm_layers[i](x), lambda: x)
             x = self.activation(x)
         x = self.layers[-1](x)  # linear activation for the last layer
         return x
