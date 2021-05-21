@@ -58,17 +58,18 @@ class InterceptionEnv(gym.Env):
          Episode length is greater than 6 seconds (180 steps @ 30FPS).
     '''
 
-    def __init__(self):
+    def __init__(self, target_speed_idx=0, approach_angle_idx=0):
         self.subject_min_position = 0.0
         self.subject_max_position = 30.0
-
         self.approach_angle_list = [135, 140, 145]
+        self.target_init_speed_list = [11.25, 9.47, 8.18]
+        self.approach_angle = self.approach_angle_list[approach_angle_idx]
+        self.target_init_speed = self.target_init_speed_list[target_speed_idx]
         self.intercept_threshold = 0.35 * 2
         self.subject_init_distance_min = 20.0
         self.subject_init_distance_max = 30.0
         self.subject_speed_max = 14.0
         self.target_init_distance = 45.0
-        self.target_init_speed_list = [11.25, 9.47, 8.18]
         self.time_to_change_speed_min = 2.5
         self.time_to_change_speed_max = 3.25
         self.speed_change_duration = 0.5
@@ -173,7 +174,7 @@ class InterceptionEnv(gym.Env):
         estimated_speed = subject_dis / (target_dis / target_speed)
         self.state = subject_speed - estimated_speed
 
-        return np.array(self.state), reward, done, self.info
+        return np.asarray([self.state], dtype=np.float32), reward, done, self.info
 
 
     def reset_old(self, target_speed_idx=0, approach_angle_idx=0):
@@ -197,11 +198,9 @@ class InterceptionEnv(gym.Env):
         return np.array(self.state)
 
 
-    def reset(self, target_speed_idx=0, approach_angle_idx=0):
+    def reset(self):
         self.time_to_change_speed = self.np_random.uniform(
             low=self.time_to_change_speed_min, high=self.time_to_change_speed_max)
-        self.approach_angle = self.approach_angle_list[approach_angle_idx]
-        self.target_init_speed = self.target_init_speed_list[target_speed_idx]
         self.target_final_speed = np.clip(
             self.np_random.normal(
                 loc=self.target_fspeed_mean, scale=self.target_fspeed_std),
@@ -217,7 +216,7 @@ class InterceptionEnv(gym.Env):
                                  has_changed_speed, subject_init_distance, subject_init_speed], dtype=np.float32)
         estimated_speed = subject_init_distance / (self.target_init_distance / self.target_init_speed)
         self.state = subject_init_speed - estimated_speed
-        return np.array(self.state)
+        return np.asarray([self.state], dtype=np.float32)
 
 
     def render(self, mode='human'):
