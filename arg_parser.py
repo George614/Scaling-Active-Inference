@@ -1,6 +1,6 @@
 import configargparse
 
-PARSER = configargparse.ArgParser(default_config_files=['configs/mountainCar.config'])
+PARSER = configargparse.ArgParser(default_config_files=['configs/MountainCar-v0.config'])
 PARSER.add('-c', '--config_path', required=False, is_config_file=True, help='config file path')
 PARSER.add('--exp_name', required=True, help='name of experiment')
 PARSER.add('--env_name', required=True, help='name of environment')
